@@ -4,9 +4,13 @@
  */
 
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { scrapeDrugInfo } from './drug-scraper';
+import { scrapePubonlnDrugInfo } from './pubonln-scraper';
+
+import { syncMergedDrugData } from './merged-drug-service';
 
 // 数据源类型
-export type DataSource = 'gz_drug' | 'gd_pubonln';
+export type DataSource = 'gz_drug' | 'gd_pubonln' | 'merged_drug';
 
 // 调度器配置接口
 export interface UnifiedSchedulerConfig {
@@ -289,12 +293,19 @@ export async function getScrapeLogs(
  */
 export async function getLatestDataTime(source: DataSource): Promise<string | null> {
   const supabase = getSupabaseClient();
-  const table = source === 'gz_drug' ? 'drug_info' : 'pubonln_drug_info';
+  let table = 'drug_info';
+  let timestampCol = 'created_at';
+  if (source === 'gd_pubonln') {
+    table = 'pubonln_drug_info';
+  } else if (source === 'merged_drug') {
+    table = 'merged_drug_info';
+    timestampCol = 'synced_at';
+  }
   
   const { data, error } = await supabase
     .from(table)
-    .select('created_at')
-    .order('created_at', { ascending: false })
+    .select(timestampCol)
+    .order(timestampCol, { ascending: false })
     .limit(1)
     .single();
 
@@ -302,7 +313,7 @@ export async function getLatestDataTime(source: DataSource): Promise<string | nu
     return null;
   }
 
-  return data.created_at;
+  return (data as any)[timestampCol];
 }
 
 /**
@@ -322,6 +333,102 @@ function stopUnifiedScheduler(source: DataSource): void {
     clearInterval(interval);
     schedulerIntervals.delete(source);
     console.log(`[UnifiedScheduler] 定时任务已停止 (${source})`);
+  }
+}
+
+/**
+ * 执行定时抓取任务
+ * 根据数据源类型调用对应的抓取函数，并记录日志和更新状态
+ */
+async function executeScrapeTask(source: DataSource): Promise<void> {
+  console.log(`[UnifiedScheduler] 开始执行定时抓取任务 (${source})...`);
+
+  // 检查是否可以开始（防止重复抓取）
+  const { canStart, reason } = await canStartScrape(source);
+  if (!canStart) {
+    console.log(`[UnifiedScheduler] 跳过定时抓取 (${source}): ${reason}`);
+    return;
+  }
+
+  // 设置运行状态
+  await setRunningStatus(source, 'running');
+
+  // 创建抓取日志
+  const logId = await createScrapeLog(source, 'scheduled');
+
+  try {
+    // 根据数据源调用对应的抓取/合并函数
+    let result: { success: boolean; message: string; total?: number; newCount?: number; updateCount?: number; error?: string };
+
+    if (source === 'gz_drug') {
+      result = await scrapeDrugInfo();
+    } else if (source === 'gd_pubonln') {
+      result = await scrapePubonlnDrugInfo();
+    } else if (source === 'merged_drug') {
+      result = await syncMergedDrugData();
+      // syncMergedDrugData返回的对象缺少total/newCount等具体统计，为了统一日志，将其置0或在调用处后续扩展
+      result.total = 0;
+      result.newCount = 0;
+      result.updateCount = 0;
+    } else {
+      throw new Error(`未知数据源: ${source}`);
+    }
+
+    // 更新抓取日志
+    if (logId) {
+      await updateScrapeLog(logId, {
+        status: result.success ? 'success' : 'failed',
+        total_count: result.total || 0,
+        new_count: result.newCount || 0,
+        update_count: result.updateCount || 0,
+        error_message: result.error,
+      });
+    }
+
+    // 更新配置表中的最后执行状态和下次执行时间
+    const config = await getUnifiedSchedulerConfig(source);
+    if (config) {
+      const nextRunAt = new Date(Date.now() + config.interval_minutes * 60 * 1000);
+      const supabase = getSupabaseClient();
+      await supabase
+        .from(CONFIG_TABLE)
+        .update({
+          last_run_at: new Date().toISOString(),
+          last_run_status: result.success ? 'success' : 'failed',
+          next_run_at: nextRunAt.toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', config.id);
+    }
+
+    console.log(`[UnifiedScheduler] 定时抓取完成 (${source}): ${result.message}`);
+  } catch (error) {
+    console.error(`[UnifiedScheduler] 定时抓取失败 (${source}):`, error);
+
+    // 更新抓取日志为失败
+    if (logId) {
+      await updateScrapeLog(logId, {
+        status: 'failed',
+        error_message: error instanceof Error ? error.message : '未知错误',
+      });
+    }
+
+    // 更新配置表中的失败状态
+    const config = await getUnifiedSchedulerConfig(source);
+    if (config) {
+      const supabase = getSupabaseClient();
+      await supabase
+        .from(CONFIG_TABLE)
+        .update({
+          last_run_at: new Date().toISOString(),
+          last_run_status: 'failed',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', config.id);
+    }
+  } finally {
+    // 重置运行状态
+    await setRunningStatus(source, 'idle');
   }
 }
 
@@ -349,8 +456,9 @@ async function startUnifiedScheduler(source: DataSource): Promise<void> {
       return;
     }
     
-    // 执行定时抓取（通过回调函数）
+    // 执行定时抓取任务
     console.log(`[UnifiedScheduler] 定时触发抓取 (${source})`);
+    await executeScrapeTask(source);
   }, intervalMs);
 
   schedulerIntervals.set(source, interval);

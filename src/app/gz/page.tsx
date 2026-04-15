@@ -8,34 +8,34 @@ import { SchedulerCard } from '@/components/drug/SchedulerCard';
 import { StatsCard } from '@/components/drug/StatsCard';
 import { ActionBar } from '@/components/drug/ActionBar';
 import { UsageGuide } from '@/components/drug/UsageGuide';
-import { GdDrugTable } from '@/components/drug/GdDrugTable';
-import type { PubonlnDrugInfo } from '@/components/drug/types';
+import { GzDrugTable } from '@/components/drug/GzDrugTable';
+import type { DrugInfo } from '@/components/drug/types';
 
-/** 广东省医保局 API 配置 */
-const GD_API_CONFIG = {
-  drugsApi: '/api/pubonln/drugs',
-  schedulerApi: '/api/pubonln/scheduler',
-  progressApi: '/api/pubonln/drugs/progress',
-  fetchApi: '/api/pubonln/drugs/fetch',
-  exportApi: '/api/pubonln/drugs/export',
-  defaultExportFilename: '挂网药品信息.xlsx',
+/** 广州药品采购平台 API 配置 */
+const GZ_API_CONFIG = {
+  drugsApi: '/api/drugs',
+  schedulerApi: '/api/scheduler',
+  progressApi: '/api/drugs/progress',
+  fetchApi: '/api/drugs/fetch',
+  exportApi: '/api/drugs/export',
+  defaultExportFilename: '药品信息.xlsx',
 };
 
-/** 广东医保使用说明 */
-const GD_INSTRUCTIONS = [
-  '**手动抓取**：点击"手动抓取"按钮立即从广东省医疗保障局获取最新挂网药品数据',
-  '**实时进度**：抓取过程中实时显示进度条、已处理条数',
+/** 广州平台使用说明 */
+const GZ_INSTRUCTIONS = [
+  '**手动抓取**：点击"手动抓取"按钮立即从广州药品采购平台获取最新数据',
+  '**实时进度**：抓取过程中实时显示进度条、已处理条数、新增/更新数量',
   '**展开详情**：点击行首的展开按钮查看完整字段信息',
   '**定时抓取**：启用定时抓取功能，系统将按设定的时间间隔自动更新数据',
-  '**导出数据**：点击"导出 Excel"按钮将所有数据下载为 Excel 文件',
+  '**导出数据**：点击"导出 Excel"按钮将当前筛选结果下载为 Excel 文件',
 ];
 
 /**
- * 广东省医保局挂网药品页面
- * 提供广东省医疗保障局挂网药品公示信息的抓取、查询和管理功能
+ * 广州药品采购平台页面
+ * 提供广州公共资源交易中心药品采购公示信息的抓取、查询和管理功能
  */
-export default function PubonlnDrugPage() {
-  const module = useDrugModule<PubonlnDrugInfo>(GD_API_CONFIG);
+export default function GzDrugPage() {
+  const module = useDrugModule<DrugInfo>(GZ_API_CONFIG);
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-7xl">
@@ -44,10 +44,10 @@ export default function PubonlnDrugPage() {
       {/* 页面标题 */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-          广东省医保局挂网药品
+          广州药品采购平台
         </h1>
         <p className="text-gray-600 dark:text-gray-400 mt-2">
-          广东省医疗保障局挂网药品公示信息抓取与管理
+          广州公共资源交易中心药品采购公示信息抓取与管理
         </p>
       </div>
 
@@ -65,13 +65,13 @@ export default function PubonlnDrugPage() {
           onSearchKeywordChange={module.setSearchKeyword}
           onSearch={module.handleSearch}
           loading={module.loading}
-          placeholder="搜索通用名、商品名或上市许可持有人..."
+          placeholder="搜索药品名称、商品名或生产企业..."
         />
         <SchedulerCard
           config={module.schedulerConfig}
           configLoading={module.configLoading}
           onUpdateConfig={module.updateSchedulerConfig}
-          idPrefix="auto-fetch-pubonln"
+          idPrefix="auto-fetch-gz"
         />
       </div>
 
@@ -91,7 +91,7 @@ export default function PubonlnDrugPage() {
       />
 
       {/* 数据表格 */}
-      <GdDrugTable
+      <GzDrugTable
         drugs={module.drugs}
         pagination={module.pagination}
         loading={module.loading}
@@ -103,9 +103,9 @@ export default function PubonlnDrugPage() {
 
       {/* 使用说明 */}
       <UsageGuide
-        instructions={GD_INSTRUCTIONS}
-        sourceUrl="https://igi.hsa.gd.gov.cn/tps/tps_public/publicity/listPubonlnPublicityD"
-        sourceName="广东省医疗保障局挂网药品公示"
+        instructions={GZ_INSTRUCTIONS}
+        sourceUrl="https://gpo.gzggzy.cn/webPortal/publicity/toNotice.html"
+        sourceName="广州药品采购平台公示信息"
       />
     </div>
   );
