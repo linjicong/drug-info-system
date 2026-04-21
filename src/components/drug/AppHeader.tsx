@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Pill, Building2, Home, Layers } from 'lucide-react';
+import { Pill, Building2, Home, Layers, ClipboardList, Clock } from 'lucide-react';
 
 /** 导航菜单项配置 */
 const navItems = [
@@ -26,6 +26,16 @@ const navItems = [
     label: '药品汇总表',
     href: '/merged',
     icon: Layers,
+  },
+  {
+    label: '药品监控台账',
+    href: '/ledger/track',
+    icon: ClipboardList,
+  },
+  {
+    label: '历史台账查询',
+    href: '/ledger/history',
+    icon: Clock,
   },
 ];
 

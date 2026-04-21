@@ -3,8 +3,7 @@
 import { Toaster } from 'sonner';
 import { useDrugModule } from '@/components/drug/hooks';
 import { FetchProgressCard } from '@/components/drug/FetchProgressCard';
-import { SearchCard } from '@/components/drug/SearchCard';
-import { SchedulerCard } from '@/components/drug/SchedulerCard';
+import { SearchCard, type FilterFieldConfig } from '@/components/drug/SearchCard';
 import { StatsCard } from '@/components/drug/StatsCard';
 import { ActionBar } from '@/components/drug/ActionBar';
 import { UsageGuide } from '@/components/drug/UsageGuide';
@@ -21,12 +20,46 @@ const GZ_API_CONFIG = {
   defaultExportFilename: '药品信息.xlsx',
 };
 
+  /** 广州平台筛选字段配置 */
+  const GZ_FILTER_FIELDS: FilterFieldConfig[] = [
+    {
+      key: 'productName',
+      label: '产品名称',
+      type: 'input',
+      placeholder: '输入产品名称',
+    },
+    {
+      key: 'nationalDrugCode',
+      label: '医保编码',
+      type: 'input',
+      placeholder: '输入医保编码',
+    },
+    {
+      key: 'companyName',
+      label: '生产企业',
+      type: 'input',
+      placeholder: '输入生产企业名称',
+    },
+    {
+      key: 'minPacQuantity',
+      label: '最小包装数量',
+      type: 'input',
+      placeholder: '输入最小包装数量',
+    },
+    {
+      key: 'minMeasureUnit',
+      label: '最小计量单位',
+      type: 'input',
+      placeholder: '输入最小计量单位',
+    },
+  ];
+
 /** 广州平台使用说明 */
 const GZ_INSTRUCTIONS = [
   '**手动抓取**：点击"手动抓取"按钮立即从广州药品采购平台获取最新数据',
   '**实时进度**：抓取过程中实时显示进度条、已处理条数、新增/更新数量',
   '**展开详情**：点击行首的展开按钮查看完整字段信息',
-  '**定时抓取**：启用定时抓取功能，系统将按设定的时间间隔自动更新数据',
+  '**多条件筛选**：支持关键字、生产企业、医保类别、挂网类别、医保编码等多条件组合查询',
   '**导出数据**：点击"导出 Excel"按钮将当前筛选结果下载为 Excel 文件',
 ];
 
@@ -58,20 +91,18 @@ export default function GzDrugPage() {
         formatDuration={module.formatDuration}
       />
 
-      {/* 操作区域 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      {/* 搜索筛选区域 */}
+      <div className="mb-6">
         <SearchCard
           searchKeyword={module.searchKeyword}
           onSearchKeywordChange={module.setSearchKeyword}
           onSearch={module.handleSearch}
+          onReset={module.handleReset}
           loading={module.loading}
           placeholder="搜索药品名称、商品名或生产企业..."
-        />
-        <SchedulerCard
-          config={module.schedulerConfig}
-          configLoading={module.configLoading}
-          onUpdateConfig={module.updateSchedulerConfig}
-          idPrefix="auto-fetch-gz"
+          filterFields={GZ_FILTER_FIELDS}
+          filterValues={module.filterValues}
+          onFilterChange={module.handleFilterChange}
         />
       </div>
 

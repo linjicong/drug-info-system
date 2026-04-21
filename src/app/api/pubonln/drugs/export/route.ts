@@ -1,14 +1,29 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { exportPubonlnDrugData } from '@/lib/pubonln-scraper';
 
 /**
  * GET /api/pubonln/drugs/export - 导出挂网药品信息为 Excel
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const searchParams = request.nextUrl.searchParams;
+    const searchKeyword = searchParams.get('search') || undefined;
+    const productName = searchParams.get('productName') || undefined;
+    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
+    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
+    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
+    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+
     // 导出所有数据
-    const data = await exportPubonlnDrugData();
+    const data = await exportPubonlnDrugData({
+      searchKeyword,
+      productName,
+      nationalDrugCode,
+      companyName,
+      minPacQuantity,
+      minMeasureUnit,
+    });
 
     if (data.length === 0) {
       return NextResponse.json({

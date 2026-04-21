@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm"
-import { pgTable, serial, timestamp, varchar, text, numeric, jsonb, index, integer, boolean } from "drizzle-orm/pg-core"
+import { pgTable, serial, timestamp, varchar, text, numeric, jsonb, index, integer, boolean, date } from "drizzle-orm/pg-core"
 
 
 export const healthCheck = pgTable("health_check", {
@@ -34,6 +34,9 @@ export const unifiedSchedulerConfig = pgTable("unified_scheduler_config", {
   
   // 更新时间
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+
+  // 定时任务外部调用鉴权密钥
+  cron_secret: varchar("cron_secret", { length: 100 }),
 });
 
 // 抓取日志表
@@ -340,5 +343,96 @@ export const drugInfo = pgTable(
     index("idx_drug_info_product_name").on(table.product_name),
     index("idx_drug_info_company_name").on(table.company_name_sc),
     index("idx_drug_info_source_type").on(table.source_type),
+  ]
+);
+
+// ============ 药品监控台账模块 ============
+
+// 用户追踪药品配置表
+export const userTrackedDrugs = pgTable(
+  "user_tracked_drugs",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    
+    // 产品名称
+    product_name: varchar("product_name", { length: 500 }).notNull(),
+    
+    // 医保编码
+    national_drug_code: varchar("national_drug_code", { length: 100 }),
+    
+    // 生产企业
+    company_name: varchar("company_name", { length: 500 }),
+    
+    // 最小包装数量
+    min_pac_quantity: varchar("min_pac_quantity", { length: 50 }),
+    
+    // 最小计量单位
+    min_measure_unit: varchar("min_measure_unit", { length: 50 }),
+    
+    // 创建时间
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    
+    // 更新时间
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_utd_product_company").on(table.product_name, table.company_name),
+  ]
+);
+
+// 药品每日台账汇总历史表
+export const drugDailyLedgers = pgTable(
+  "drug_daily_ledgers",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    
+    // 追踪表关联ID (可以为 null，应对未来被删除的追踪记录，但历史还在)
+    tracked_drug_id: varchar("tracked_drug_id", { length: 36 }),
+    
+    // 统计时间/日期 (YYYY-MM-DD)
+    stat_date: date("stat_date").notNull(),
+    
+    // 产品名称
+    product_name: varchar("product_name", { length: 500 }).notNull(),
+    
+    // 医保编码
+    national_drug_code: varchar("national_drug_code", { length: 100 }),
+    
+    // 剂型
+    dosform: varchar("dosform", { length: 100 }),
+    
+    // 生产企业
+    company_name: varchar("company_name", { length: 500 }),
+    
+    // 规格
+    spec: text("spec"),
+    
+    // 最小包装数量
+    min_pac_quantity: varchar("min_pac_quantity", { length: 50 }),
+    
+    // 最小包装单位
+    min_pac_unit: varchar("min_pac_unit", { length: 50 }),
+    
+    // 最小计量单位
+    min_measure_unit: varchar("min_measure_unit", { length: 50 }),
+    
+    // 药品挂网类别
+    drug_net_type: varchar("drug_net_type", { length: 100 }),
+    
+    // 挂网时间
+    net_time: varchar("net_time", { length: 50 }),
+    
+    // GPO挂网价格(元)
+    gpo_price: numeric("gpo_price", { precision: 15, scale: 4 }),
+    
+    // 省平台挂网价格(元)
+    provincial_price: numeric("provincial_price", { precision: 15, scale: 4 }),
+    
+    // 创建时间
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_ddl_stat_date").on(table.stat_date),
+    index("idx_ddl_product_name").on(table.product_name),
   ]
 );

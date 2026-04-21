@@ -232,13 +232,7 @@ function mergeAndDedupe(gdRows: GdDrugRow[], gzRows: GzDrugRow[]): Omit<MergedDr
       existing.source = 'both';
       existing.gz_bid_price = row.bid_price ?? undefined;
       existing.gz_min_unit_price = row.min_unit_price ?? undefined;
-      if (!existing.dosform && row.medicinemodel) existing.dosform = row.medicinemodel;
-      if (!existing.drug_net_type && row.source_type) existing.drug_net_type = row.source_type;
-      if (!existing.net_time && row.net_time) existing.net_time = row.net_time;
-      if (!existing.medicare_type_label && row.medicare_type !== undefined) {
-        existing.medicare_type_label = formatMedicareType(row.medicare_type);
-      }
-      if (!existing.package_material && row.material_name) existing.package_material = row.material_name;
+      // 对于判定为相同的行，除了保留广州特有的价格字段外，需要合并的其他共用字段均取广东医保数据（不进行回填）
     } else {
       mergedMap.set(key, mapGzRow(row));
     }
@@ -333,6 +327,13 @@ export async function getMergedDrugList(options?: {
   page?: number;
   pageSize?: number;
   searchKeyword?: string;
+  productName?: string;
+  companyName?: string;
+  source?: string;
+  medicareTypeLabel?: string;
+  nationalDrugCode?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
 }): Promise<{ data: MergedDrugInfo[]; total: number }> {
   const page = options?.page || 1;
   const pageSize = options?.pageSize || 20;
@@ -350,6 +351,38 @@ export async function getMergedDrugList(options?: {
     query = query.or(
       `product_name.ilike.%${keyword}%,company_name.ilike.%${keyword}%`
     );
+  }
+
+  if (options?.productName) {
+    query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
+  }
+
+  // 生产企业筛选
+  if (options?.companyName) {
+    query = query.ilike('company_name', `%${options.companyName}%`);
+  }
+
+  // 数据来源筛选
+  if (options?.source) {
+    query = query.eq('source', options.source);
+  }
+
+  // 医保类别筛选
+  if (options?.medicareTypeLabel) {
+    query = query.eq('medicare_type_label', options.medicareTypeLabel);
+  }
+
+  // 医保编码筛选
+  if (options?.nationalDrugCode) {
+    query = query.ilike('national_drug_code', `%${options.nationalDrugCode}%`);
+  }
+
+  if (options?.minPacQuantity) {
+    query = query.ilike('min_pac_quantity', `%${decodeURIComponent(options.minPacQuantity)}%`);
+  }
+
+  if (options?.minMeasureUnit) {
+    query = query.ilike('min_measure_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
   }
 
   query = query.range(offset, offset + pageSize - 1);
@@ -372,6 +405,13 @@ export async function getMergedDrugList(options?: {
  */
 export async function exportMergedDrugData(options?: {
   searchKeyword?: string;
+  productName?: string;
+  companyName?: string;
+  source?: string;
+  medicareTypeLabel?: string;
+  nationalDrugCode?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
 }): Promise<MergedDrugInfo[]> {
   const client = getSupabaseClient();
   const keyword = options?.searchKeyword ? decodeURIComponent(options.searchKeyword) : undefined;
@@ -391,6 +431,38 @@ export async function exportMergedDrugData(options?: {
       query = query.or(
         `product_name.ilike.%${keyword}%,company_name.ilike.%${keyword}%`
       );
+    }
+
+    if (options?.productName) {
+      query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
+    }
+
+    // 生产企业筛选
+    if (options?.companyName) {
+      query = query.ilike('company_name', `%${options.companyName}%`);
+    }
+
+    // 数据来源筛选
+    if (options?.source) {
+      query = query.eq('source', options.source);
+    }
+
+    // 医保类别筛选
+    if (options?.medicareTypeLabel) {
+      query = query.eq('medicare_type_label', options.medicareTypeLabel);
+    }
+
+    // 医保编码筛选
+    if (options?.nationalDrugCode) {
+      query = query.ilike('national_drug_code', `%${options.nationalDrugCode}%`);
+    }
+
+    if (options?.minPacQuantity) {
+      query = query.ilike('min_pac_quantity', `%${decodeURIComponent(options.minPacQuantity)}%`);
+    }
+
+    if (options?.minMeasureUnit) {
+      query = query.ilike('min_measure_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
     }
 
     const { data, error } = await query;

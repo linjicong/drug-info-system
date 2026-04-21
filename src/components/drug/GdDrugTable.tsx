@@ -1,12 +1,11 @@
 'use client';
 
 import { Fragment } from 'react';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Loader2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { PaginationBar } from './PaginationBar';
+import { TableLoadingState, TableEmptyState, ExpandButton, ExpandedRowWrapper } from './TableCommon';
 import type { PubonlnDrugInfo, PaginationInfo } from './types';
 
 interface GdDrugTableProps {
@@ -43,15 +42,9 @@ export function GdDrugTable({
     <Card>
       <CardContent className="p-0">
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
-          </div>
+          <TableLoadingState />
         ) : drugs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-            <AlertCircle className="w-12 h-12 mb-4" />
-            <p className="text-lg font-medium">暂无数据</p>
-            <p className="text-sm mt-2">点击&quot;手动抓取&quot;按钮获取挂网药品信息</p>
-          </div>
+          <TableEmptyState hint="点击「手动抓取」按钮获取挂网药品信息" />
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -76,17 +69,10 @@ export function GdDrugTable({
                       <Fragment key={drug.id}>
                         <TableRow className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800">
                           <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
+                            <ExpandButton
+                              isExpanded={isExpanded}
                               onClick={() => onToggleRowExpand(drug.id)}
-                            >
-                              {isExpanded ? (
-                                <ChevronUp className="w-4 h-4" />
-                              ) : (
-                                <ChevronDown className="w-4 h-4" />
-                              )}
-                            </Button>
+                            />
                           </TableCell>
                           <TableCell className="font-medium text-blue-600 dark:text-blue-400">
                             {drug.genname}
@@ -123,9 +109,7 @@ export function GdDrugTable({
                           </TableCell>
                         </TableRow>
                         {isExpanded && (
-                          <TableRow className="bg-gray-50 dark:bg-gray-900">
-                            <TableCell colSpan={9} className="p-4">
-                              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 text-sm">
+                          <ExpandedRowWrapper colSpan={9}>
                                 <div>
                                   <span className="text-gray-500">药品ID</span>
                                   <p className="font-mono">{drug.drug_id || '-'}</p>
@@ -204,9 +188,7 @@ export function GdDrugTable({
                                   <span className="text-gray-500">创建时间</span>
                                   <p>{new Date(drug.created_at).toLocaleString()}</p>
                                 </div>
-                              </div>
-                            </TableCell>
-                          </TableRow>
+                              </ExpandedRowWrapper>
                         )}
                       </Fragment>
                     );

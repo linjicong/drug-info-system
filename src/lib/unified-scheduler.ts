@@ -10,7 +10,7 @@ import { scrapePubonlnDrugInfo } from './pubonln-scraper';
 import { syncMergedDrugData } from './merged-drug-service';
 
 // 数据源类型
-export type DataSource = 'gz_drug' | 'gd_pubonln' | 'merged_drug';
+export type DataSource = 'gz_drug' | 'gd_pubonln' | 'merged_drug' | 'ledger';
 
 // 调度器配置接口
 export interface UnifiedSchedulerConfig {
@@ -23,6 +23,7 @@ export interface UnifiedSchedulerConfig {
   last_run_status: string | null;
   running_status: 'idle' | 'running';
   updated_at: string;
+  cron_secret: string | null;
 }
 
 // 抓取日志接口
@@ -44,8 +45,7 @@ export interface ScrapeLog {
 const CONFIG_TABLE = 'unified_scheduler_config';
 const LOG_TABLE = 'scrape_log';
 
-// 调度器间隔存储
-const schedulerIntervals = new Map<DataSource, NodeJS.Timeout>();
+// 调度器间隔存储已被移除，由外部 Cron API 触发
 
 /**
  * 获取调度器配置
@@ -68,6 +68,7 @@ export async function getUnifiedSchedulerConfig(source: DataSource): Promise<Uni
           enabled: false,
           interval_minutes: 60,
           running_status: 'idle',
+          cron_secret: Math.random().toString(36).substring(2, 15) // 生成初始随机秘钥
         })
         .select()
         .single();
@@ -96,7 +97,7 @@ export async function getUnifiedSchedulerConfig(source: DataSource): Promise<Uni
  */
 export async function updateUnifiedSchedulerConfig(
   source: DataSource,
-  config: { enabled?: boolean; interval_minutes?: number }
+  config: { enabled?: boolean; interval_minutes?: number; cron_secret?: string }
 ): Promise<UnifiedSchedulerConfig | null> {
   try {
     const currentConfig = await getUnifiedSchedulerConfig(source);
@@ -113,6 +114,9 @@ export async function updateUnifiedSchedulerConfig(
     }
     if (config.interval_minutes !== undefined) {
       updateData.interval_minutes = config.interval_minutes;
+    }
+    if (config.cron_secret !== undefined) {
+      updateData.cron_secret = config.cron_secret;
     }
 
     // 计算下次执行时间
@@ -137,8 +141,7 @@ export async function updateUnifiedSchedulerConfig(
       throw error;
     }
 
-    // 重启调度器
-    restartUnifiedScheduler(source);
+    // 已移除对 restartUnifiedScheduler 的调用，依靠外部 Cron 定期拉取最新状态
 
     return updated;
   } catch (error) {
@@ -317,30 +320,10 @@ export async function getLatestDataTime(source: DataSource): Promise<string | nu
 }
 
 /**
- * 重启调度器
- */
-function restartUnifiedScheduler(source: DataSource): void {
-  stopUnifiedScheduler(source);
-  startUnifiedScheduler(source);
-}
-
-/**
- * 停止调度器
- */
-function stopUnifiedScheduler(source: DataSource): void {
-  const interval = schedulerIntervals.get(source);
-  if (interval) {
-    clearInterval(interval);
-    schedulerIntervals.delete(source);
-    console.log(`[UnifiedScheduler] 定时任务已停止 (${source})`);
-  }
-}
-
-/**
  * 执行定时抓取任务
  * 根据数据源类型调用对应的抓取函数，并记录日志和更新状态
  */
-async function executeScrapeTask(source: DataSource): Promise<void> {
+export async function executeScrapeTask(source: DataSource): Promise<void> {
   console.log(`[UnifiedScheduler] 开始执行定时抓取任务 (${source})...`);
 
   // 检查是否可以开始（防止重复抓取）
@@ -433,51 +416,9 @@ async function executeScrapeTask(source: DataSource): Promise<void> {
 }
 
 /**
- * 启动调度器
- */
-async function startUnifiedScheduler(source: DataSource): Promise<void> {
-  if (schedulerIntervals.has(source)) {
-    return;
-  }
-
-  const config = await getUnifiedSchedulerConfig(source);
-  if (!config || !config.enabled) {
-    return;
-  }
-
-  const intervalMs = config.interval_minutes * 60 * 1000;
-  
-  console.log(`[UnifiedScheduler] 启动定时任务 (${source})，间隔: ${config.interval_minutes} 分钟`);
-  
-  const interval = setInterval(async () => {
-    const currentConfig = await getUnifiedSchedulerConfig(source);
-    if (!currentConfig?.enabled) {
-      stopUnifiedScheduler(source);
-      return;
-    }
-    
-    // 执行定时抓取任务
-    console.log(`[UnifiedScheduler] 定时触发抓取 (${source})`);
-    await executeScrapeTask(source);
-  }, intervalMs);
-
-  schedulerIntervals.set(source, interval);
-}
-
-/**
- * 初始化调度器
+ * 初始化调度器（预热并确保配置记录存在）
  */
 export async function initUnifiedScheduler(source: DataSource): Promise<void> {
-  const config = await getUnifiedSchedulerConfig(source);
-  if (config?.enabled) {
-    await startUnifiedScheduler(source);
-  }
-  console.log(`[UnifiedScheduler] 调度器初始化完成 (${source})`);
-}
-
-/**
- * 检查调度器是否运行中
- */
-export function isUnifiedSchedulerRunning(source: DataSource): boolean {
-  return schedulerIntervals.has(source);
+  await getUnifiedSchedulerConfig(source);
+  console.log(`[UnifiedScheduler] 调度器初始化/预热完成 (${source})`);
 }

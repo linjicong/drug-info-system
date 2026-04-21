@@ -9,8 +9,26 @@ import type { MergedDrugInfo } from '@/components/drug/types';
  */
 export async function GET(request: NextRequest) {
   try {
-    const searchKeyword = request.nextUrl.searchParams.get('search') || undefined;
-    const allData = await exportMergedDrugData({ searchKeyword });
+    const searchParams = request.nextUrl.searchParams;
+    const searchKeyword = searchParams.get('search') || undefined;
+    const productName = searchParams.get('productName') || undefined;
+    const companyName = searchParams.get('companyName') || undefined;
+    const source = searchParams.get('source') || undefined;
+    const medicareTypeLabel = searchParams.get('medicareTypeLabel') || undefined;
+    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
+    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
+    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+
+    const allData = await exportMergedDrugData({
+      searchKeyword,
+      productName,
+      companyName,
+      source,
+      medicareTypeLabel,
+      nationalDrugCode,
+      minPacQuantity,
+      minMeasureUnit,
+    });
 
     if (allData.length === 0) {
       return NextResponse.json(

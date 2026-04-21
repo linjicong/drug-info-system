@@ -4,17 +4,25 @@ import { getDrugList } from '@/lib/drug-scraper';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    
+
     const page = parseInt(searchParams.get('page') || '1');
     const pageSize = parseInt(searchParams.get('pageSize') || '20');
     const searchKeyword = searchParams.get('search') || undefined;
-    const manufacturer = searchParams.get('manufacturer') || undefined;
-    
+    const productName = searchParams.get('productName') || undefined;
+    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
+    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
+    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
+    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+
     const result = await getDrugList({
       page,
       pageSize,
       searchKeyword,
-      manufacturer,
+      productName,
+      nationalDrugCode,
+      companyName,
+      minPacQuantity,
+      minMeasureUnit,
     });
     
     return NextResponse.json({

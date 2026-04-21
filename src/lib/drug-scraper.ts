@@ -544,7 +544,11 @@ export async function getDrugList(options?: {
   page?: number;
   pageSize?: number;
   searchKeyword?: string;
-  manufacturer?: string;
+  productName?: string;
+  nationalDrugCode?: string;
+  companyName?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
 }): Promise<{ data: DrugInfo[]; total: number }> {
   const client = getSupabaseClient();
   const page = options?.page || 1;
@@ -564,9 +568,29 @@ export async function getDrugList(options?: {
     );
   }
 
+  if (options?.productName) {
+    query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
+  }
+
   // 生产企业筛选
-  if (options?.manufacturer) {
-    query = query.ilike('company_name_sc', `%${options.manufacturer}%`);
+  if (options?.companyName) {
+    query = query.ilike('company_name_sc', `%${decodeURIComponent(options.companyName)}%`);
+  }
+
+  // 医保编码筛选
+  if (options?.nationalDrugCode) {
+    query = query.ilike('national_drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
+  }
+
+  if (options?.minPacQuantity) {
+    const quantityNumber = Number(options.minPacQuantity);
+    if (!Number.isNaN(quantityNumber)) {
+      query = query.eq('factor', quantityNumber);
+    }
+  }
+
+  if (options?.minMeasureUnit) {
+    query = query.ilike('min_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
   }
 
   // 分页
@@ -587,9 +611,13 @@ export async function getDrugList(options?: {
 /**
  * 导出药品信息为 Excel 数据（获取所有数据）
  */
-export async function exportDrugData(_options?: {
+export async function exportDrugData(options?: {
   searchKeyword?: string;
-  manufacturer?: string;
+  productName?: string;
+  nationalDrugCode?: string;
+  companyName?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
 }): Promise<DrugInfo[]> {
   const client = getSupabaseClient();
   const allData: DrugInfo[] = [];
@@ -599,11 +627,44 @@ export async function exportDrugData(_options?: {
 
   // 分批获取所有数据
   while (hasMore) {
-    const { data, error } = await client
+    let query = client
       .from('drug_info')
       .select('*')
       .order('created_at', { ascending: false })
       .range(offset, offset + batchSize - 1);
+
+    // 搜索条件
+    if (options?.searchKeyword) {
+      const keyword = decodeURIComponent(options.searchKeyword);
+      query = query.or(
+        `product_name.ilike.%${keyword}%,goods_name.ilike.%${keyword}%,company_name_sc.ilike.%${keyword}%`
+      );
+    }
+
+    if (options?.productName) {
+      query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
+    }
+
+    if (options?.companyName) {
+      query = query.ilike('company_name_sc', `%${decodeURIComponent(options.companyName)}%`);
+    }
+
+    if (options?.nationalDrugCode) {
+      query = query.ilike('national_drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
+    }
+
+    if (options?.minPacQuantity) {
+      const quantityNumber = Number(options.minPacQuantity);
+      if (!Number.isNaN(quantityNumber)) {
+        query = query.eq('factor', quantityNumber);
+      }
+    }
+
+    if (options?.minMeasureUnit) {
+      query = query.ilike('min_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       throw new Error(`导出失败: ${error.message}`);

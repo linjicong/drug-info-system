@@ -8,6 +8,7 @@ import type {
   SchedulerConfig,
   DrugModuleApiConfig,
 } from './types';
+import type { FilterValues } from './SearchCard';
 
 /**
  * 药品模块通用 Hook
@@ -24,6 +25,7 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     totalPages: 0,
   });
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [filterValues, setFilterValues] = useState<FilterValues>({});
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -79,6 +81,11 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
       });
       if (searchKeyword) params.append('search', searchKeyword);
 
+      // 附加额外筛选参数
+      for (const [key, value] of Object.entries(filterValues)) {
+        if (value) params.append(key, value);
+      }
+
       const response = await fetch(`${apiConfig.drugsApi}?${params}`);
       const result = await response.json();
 
@@ -93,7 +100,7 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     } finally {
       setLoading(false);
     }
-  }, [pagination.page, pagination.pageSize, searchKeyword, apiConfig.drugsApi]);
+  }, [pagination.page, pagination.pageSize, searchKeyword, filterValues, apiConfig.drugsApi]);
 
   /** 更新调度器配置 */
   const updateSchedulerConfig = async (updates: { enabled?: boolean; intervalMinutes?: number }) => {
@@ -189,7 +196,13 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
   const handleExport = async () => {
     setExporting(true);
     try {
-      const response = await fetch(apiConfig.exportApi);
+      const params = new URLSearchParams();
+      if (searchKeyword) params.append('search', searchKeyword);
+      for (const [key, value] of Object.entries(filterValues)) {
+        if (value) params.append(key, value);
+      }
+
+      const response = await fetch(`${apiConfig.exportApi}?${params}`);
 
       if (!response.ok) {
         const result = await response.json();
@@ -229,6 +242,26 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     setPagination(prev => ({ ...prev, page: 1 }));
     loadDrugs();
   };
+
+  /** 重置筛选条件 */
+  const handleReset = () => {
+    setSearchKeyword('');
+    setFilterValues({});
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  /** 更新单个筛选字段值 */
+const handleFilterChange = (key: string, value: string) => {
+  setFilterValues(prev => {
+    const next = { ...prev };
+    if (value === 'all') {
+      delete next[key];
+    } else {
+      next[key] = value;
+    }
+    return next;
+  });
+};
 
   /** 分页处理 */
   const handlePageChange = (newPage: number) => {
@@ -291,10 +324,13 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     schedulerConfig,
     configLoading,
     searchKeyword,
+    filterValues,
 
     // 操作
     setSearchKeyword,
     handleSearch,
+    handleReset,
+    handleFilterChange,
     handlePageChange,
     handleFetch,
     handleExport,

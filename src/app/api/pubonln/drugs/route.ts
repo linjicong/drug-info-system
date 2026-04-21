@@ -7,17 +7,25 @@ import { getPubonlnDrugList } from '@/lib/pubonln-scraper';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    
+
     const page = parseInt(searchParams.get('page') || '1', 10);
     const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
     const searchKeyword = searchParams.get('search') || undefined;
-
-    console.log('[API] 搜索关键词:', searchKeyword, '解码后:', searchKeyword ? decodeURIComponent(searchKeyword) : undefined);
+    const productName = searchParams.get('productName') || undefined;
+    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
+    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
+    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
+    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
 
     const { data, total } = await getPubonlnDrugList({
       page,
       pageSize,
       searchKeyword,
+      productName,
+      nationalDrugCode,
+      companyName,
+      minPacQuantity,
+      minMeasureUnit,
     });
 
     const totalPages = Math.ceil(total / pageSize);

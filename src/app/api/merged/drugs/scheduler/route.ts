@@ -5,7 +5,7 @@ import {
   getLatestScrapeLog,
   getLatestDataTime,
   initUnifiedScheduler,
-  isUnifiedSchedulerRunning,
+
 } from '@/lib/unified-scheduler';
 
 const SOURCE = 'merged_drug' as const;
@@ -43,7 +43,8 @@ export async function GET() {
         nextRunAt: config.next_run_at,
         lastRunAt: config.last_run_at,
         lastRunStatus: config.last_run_status,
-        isRunning: isUnifiedSchedulerRunning(SOURCE),
+        cronSecret: config.cron_secret,
+        isRunning: config.enabled,
         runningStatus: config.running_status,
         latestLog: latestLog ? {
           startTime: latestLog.start_time,
@@ -78,9 +79,10 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { enabled, intervalMinutes } = body;
+    const { enabled, intervalMinutes, cronSecret } = body;
 
-    const updateData: { enabled?: boolean; interval_minutes?: number } = {};
+    // 验证参数
+    const updateData: { enabled?: boolean; interval_minutes?: number; cron_secret?: string } = {};
     
     if (typeof enabled === 'boolean') {
       updateData.enabled = enabled;
@@ -88,6 +90,10 @@ export async function POST(request: NextRequest) {
     
     if (typeof intervalMinutes === 'number' && intervalMinutes >= 1 && intervalMinutes <= 1440) {
       updateData.interval_minutes = intervalMinutes;
+    }
+
+    if (typeof cronSecret === 'string') {
+      updateData.cron_secret = cronSecret;
     }
 
     if (Object.keys(updateData).length === 0) {

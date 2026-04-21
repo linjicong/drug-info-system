@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Pill, Building2, ArrowRight, Database, RefreshCw, FileSpreadsheet, Layers } from 'lucide-react';
+import { Pill, Building2, ArrowRight, Database, RefreshCw, FileSpreadsheet, Layers, ClipboardList, History } from 'lucide-react';
 
 /** 模块卡片配置 */
 const modules = [
@@ -40,6 +40,28 @@ const modules = [
     features: ['两表数据整合', '价格对比展示', '数据去重导出'],
     source: 'gd-medical + gz-gpo',
   },
+  {
+    title: '台账追踪配置',
+    description: '维护需要持续监控的药品清单，支持手工维护与模板导入',
+    href: '/ledger/track',
+    icon: ClipboardList,
+    color: 'from-amber-500 to-orange-500',
+    bgColor: 'bg-amber-50 dark:bg-amber-950/30',
+    borderColor: 'border-amber-200 dark:border-amber-800',
+    features: ['监控药品维护', '模板下载导入', '追踪规则配置'],
+    source: 'ledger tracked list',
+  },
+  {
+    title: '台账历史查询',
+    description: '查看每日台账快照与价格变化，支持按日期区间筛选和导出',
+    href: '/ledger/history',
+    icon: History,
+    color: 'from-rose-500 to-pink-500',
+    bgColor: 'bg-rose-50 dark:bg-rose-950/30',
+    borderColor: 'border-rose-200 dark:border-rose-800',
+    features: ['历史快照查询', '周一数据导出', '价格变化分析'],
+    source: 'ledger snapshots',
+  },
 ];
 
 /** 系统功能亮点 */
@@ -51,8 +73,8 @@ const highlights = [
   },
   {
     icon: RefreshCw,
-    title: '定时更新',
-    description: '支持配置定时抓取，自动同步最新数据',
+    title: '多条件筛选',
+    description: '支持关键字、企业、医保类别等多条件组合查询',
   },
   {
     icon: FileSpreadsheet,
@@ -82,7 +104,7 @@ export default function HomePage() {
       </div>
 
       {/* 模块入口卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
         {modules.map((module) => (
           <Link key={module.href} href={module.href} className="group">
             <Card className={`h-full transition-all duration-300 hover:shadow-xl hover:-translate-y-1 ${module.borderColor} ${module.bgColor}`}>

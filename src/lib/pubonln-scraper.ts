@@ -487,6 +487,11 @@ export async function getPubonlnDrugList(options?: {
   page?: number;
   pageSize?: number;
   searchKeyword?: string;
+  productName?: string;
+  nationalDrugCode?: string;
+  companyName?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
 }): Promise<{ data: PubonlnDrugInfo[]; total: number }> {
   const client = getSupabaseClient();
   const page = options?.page || 1;
@@ -498,13 +503,35 @@ export async function getPubonlnDrugList(options?: {
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false });
 
-  // 搜索条件 - 使用 filter 方法
+  // 搜索条件 - 多字段搜索
   if (options?.searchKeyword) {
     const keyword = decodeURIComponent(options.searchKeyword);
     console.log('[PubonlnScraper] 搜索关键词:', keyword);
     
-    // 使用 filter 方法进行多字段搜索
-    query = query.filter('genname', 'ilike', `%${keyword}%`);
+    query = query.or(
+      `genname.ilike.%${keyword}%,trade_name.ilike.%${keyword}%,listing_license_holder.ilike.%${keyword}%,prodentp_name.ilike.%${keyword}%`
+    );
+  }
+
+  if (options?.productName) {
+    query = query.ilike('genname', `%${decodeURIComponent(options.productName)}%`);
+  }
+
+  if (options?.companyName) {
+    query = query.ilike('prodentp_name', `%${decodeURIComponent(options.companyName)}%`);
+  }
+
+  if (options?.minPacQuantity) {
+    query = query.ilike('convrat', `%${decodeURIComponent(options.minPacQuantity)}%`);
+  }
+
+  if (options?.minMeasureUnit) {
+    query = query.ilike('minunt_name', `%${decodeURIComponent(options.minMeasureUnit)}%`);
+  }
+
+  // 国家医保代码筛选
+  if (options?.nationalDrugCode) {
+    query = query.ilike('drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
   }
 
   // 分页
@@ -526,7 +553,14 @@ export async function getPubonlnDrugList(options?: {
 /**
  * 导出挂网药品信息为 Excel 数据（获取所有数据）
  */
-export async function exportPubonlnDrugData(): Promise<PubonlnDrugInfo[]> {
+export async function exportPubonlnDrugData(options?: {
+  searchKeyword?: string;
+  productName?: string;
+  nationalDrugCode?: string;
+  companyName?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
+}): Promise<PubonlnDrugInfo[]> {
   const client = getSupabaseClient();
   const allData: PubonlnDrugInfo[] = [];
   const batchSize = 1000;
@@ -534,11 +568,40 @@ export async function exportPubonlnDrugData(): Promise<PubonlnDrugInfo[]> {
   let hasMore = true;
 
   while (hasMore) {
-    const { data, error } = await client
+    let query = client
       .from('pubonln_drug_info')
       .select('*')
       .order('created_at', { ascending: false })
       .range(offset, offset + batchSize - 1);
+
+    if (options?.searchKeyword) {
+      const keyword = decodeURIComponent(options.searchKeyword);
+      query = query.or(
+        `genname.ilike.%${keyword}%,trade_name.ilike.%${keyword}%,listing_license_holder.ilike.%${keyword}%,prodentp_name.ilike.%${keyword}%`
+      );
+    }
+
+    if (options?.productName) {
+      query = query.ilike('genname', `%${decodeURIComponent(options.productName)}%`);
+    }
+
+    if (options?.companyName) {
+      query = query.ilike('prodentp_name', `%${decodeURIComponent(options.companyName)}%`);
+    }
+
+    if (options?.minPacQuantity) {
+      query = query.ilike('convrat', `%${decodeURIComponent(options.minPacQuantity)}%`);
+    }
+
+    if (options?.minMeasureUnit) {
+      query = query.ilike('minunt_name', `%${decodeURIComponent(options.minMeasureUnit)}%`);
+    }
+
+    if (options?.nationalDrugCode) {
+      query = query.ilike('drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       throw new Error(`导出失败: ${error.message}`);

@@ -4,8 +4,23 @@ import { exportDrugData } from '@/lib/drug-scraper';
 
 export async function GET(request: NextRequest) {
   try {
-    // 导出所有数据（忽略搜索参数）
-    const data = await exportDrugData({});
+    const searchParams = request.nextUrl.searchParams;
+    const searchKeyword = searchParams.get('search') || undefined;
+    const productName = searchParams.get('productName') || undefined;
+    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
+    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
+    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
+    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+
+    // 导出数据（支持筛选参数）
+    const data = await exportDrugData({
+      searchKeyword,
+      productName,
+      nationalDrugCode,
+      companyName,
+      minPacQuantity,
+      minMeasureUnit,
+    });
     
     if (data.length === 0) {
       return NextResponse.json({
