@@ -16,20 +16,32 @@ interface MergeProgressCardProps {
 export function MergeProgressCard({ progress, formatDuration }: MergeProgressCardProps) {
   if (progress.status === 'idle') return null;
 
-  // 估算总体进度百分比（简单按各个部分估算：50% 加载源数据，20%合并，30%写入）
+  const isStageLoad = progress.phase.includes('查询广东') || progress.phase.includes('查询广州');
+  const isStageMerge = progress.phase.includes('合并去重');
+  const isStageWrite = progress.phase.includes('清空旧') || progress.phase.includes('写入');
+
+  const currentStage = progress.status === 'completed'
+    ? 4
+    : isStageWrite
+      ? 3
+      : isStageMerge
+        ? 2
+        : 1;
+
+  // 4 阶段进度百分比：1) 数据读取 2) 合并去重 3) 写入新表 4) 完成
   let percent = 0;
   if (progress.status === 'completed') percent = 100;
   else if (progress.status === 'running') {
-    if (progress.phase.includes('查询广东')) percent = 10;
-    else if (progress.phase.includes('查询广州')) percent = 30;
-    else if (progress.phase.includes('合并去重')) percent = 60;
-    else if (progress.phase.includes('清空旧')) percent = 70;
-    else if (progress.phase.includes('写入')) {
+    if (isStageLoad) {
+      percent = progress.phase.includes('查询广州') ? 35 : 20;
+    } else if (isStageMerge) {
+      percent = 60;
+    } else if (isStageWrite) {
       const writeRatio = progress.mergedTotal > 0 ? (progress.savedCount / progress.mergedTotal) : 0;
       percent = 70 + Math.floor(writeRatio * 25);
     }
   } else if (progress.status === 'error') {
-    percent = 100;
+    percent = currentStage >= 3 ? 85 : currentStage >= 2 ? 60 : 30;
   }
 
   return (
@@ -67,6 +79,26 @@ export function MergeProgressCard({ progress, formatDuration }: MergeProgressCar
             <span>{percent}%</span>
           </div>
           <Progress value={percent} className="h-3" />
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          {['1. 数据读取', '2. 合并去重', '3. 写入新表', '4. 完成'].map((label, index) => {
+            const stageNumber = index + 1;
+            const active = currentStage === stageNumber && progress.status === 'running';
+            const done = currentStage > stageNumber || progress.status === 'completed';
+            return (
+              <div
+                key={label}
+                className={`rounded-md border px-2 py-1 text-center ${
+                  active ? 'border-purple-400 bg-purple-100 text-purple-700' :
+                  done ? 'border-green-400 bg-green-100 text-green-700' :
+                  'border-slate-200 bg-white text-slate-500'
+                }`}
+              >
+                {label}
+              </div>
+            );
+          })}
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">

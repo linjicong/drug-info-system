@@ -80,10 +80,60 @@ const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   lastRunStatus: null,
 };
 
+const MERGED_QUERY_STORAGE_KEY = 'merged-query-state';
+const MERGED_PROGRESS_STORAGE_KEY = 'merged-progress-state';
+
+type MergedQueryState = {
+  searchKeyword: string;
+  filterValues: FilterValues;
+};
+
+const readMergedQueryState = (): MergedQueryState | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(MERGED_QUERY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<MergedQueryState>;
+    return {
+      searchKeyword: typeof parsed.searchKeyword === 'string' ? parsed.searchKeyword : '',
+      filterValues: parsed.filterValues && typeof parsed.filterValues === 'object' ? parsed.filterValues : {},
+    };
+  } catch {
+    return null;
+  }
+};
+
+const readMergedProgressState = (): MergeProgress | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(MERGED_PROGRESS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<MergeProgress>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!['idle', 'running', 'completed', 'error'].includes(String(parsed.status))) return null;
+    return {
+      status: parsed.status as MergeProgress['status'],
+      phase: typeof parsed.phase === 'string' ? parsed.phase : '',
+      gdLoaded: Number(parsed.gdLoaded ?? 0),
+      gzLoaded: Number(parsed.gzLoaded ?? 0),
+      mergedTotal: Number(parsed.mergedTotal ?? 0),
+      savedCount: Number(parsed.savedCount ?? 0),
+      startTime: parsed.startTime ?? null,
+      endTime: parsed.endTime ?? null,
+      error: typeof parsed.error === 'string' ? parsed.error : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
 /**
  * 药品汇总表页面
  */
 export default function MergedDrugPage() {
+  const persistedQueryState = readMergedQueryState();
+  const persistedMergeProgressRef = useRef<MergeProgress | null>(readMergedProgressState());
+
   // 数据状态
   const [drugs, setDrugs] = useState<MergedDrugInfo[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>({
@@ -92,14 +142,16 @@ export default function MergedDrugPage() {
     total: 0,
     totalPages: 0,
   });
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [filterValues, setFilterValues] = useState<FilterValues>({});
+  const [searchKeyword, setSearchKeyword] = useState(persistedQueryState?.searchKeyword ?? '');
+  const [filterValues, setFilterValues] = useState<FilterValues>(persistedQueryState?.filterValues ?? {});
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // 进度状态
-  const [mergeProgress, setMergeProgress] = useState<MergeProgress>(DEFAULT_MERGE_PROGRESS);
+  const [mergeProgress, setMergeProgress] = useState<MergeProgress>(
+    persistedMergeProgressRef.current ?? DEFAULT_MERGE_PROGRESS
+  );
   const [now, setNow] = useState(Date.now());
 
   // 调度器状态
@@ -110,6 +162,9 @@ export default function MergedDrugPage() {
   const pollingRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const schedulerPollingRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const autoSearchInitializedRef = useRef(false);
+  const lastMergeStatusRef = useRef<MergeProgress['status']>(
+    persistedMergeProgressRef.current?.status ?? 'idle'
+  );
 
   // 记录搜索关键词引用
   const searchKeywordRef = useRef(searchKeyword);
@@ -161,7 +216,7 @@ export default function MergedDrugPage() {
   const loadSchedulerConfig = useCallback(async (isInitial = false) => {
     if (isInitial) setConfigLoading(true);
     try {
-      const response = await fetch('/api/merged/drugs/scheduler');
+      const response = await fetch(`/api/merged/drugs/scheduler?_t=${Date.now()}`, { cache: 'no-store' });
       const result = await response.json();
 
       if (result.success && result.data) {
@@ -196,36 +251,16 @@ export default function MergedDrugPage() {
     }
   };
 
-  /** 轮询合并进度 */
-  const startPolling = useCallback(() => {
-    if (pollingRef.current) return;
-
-    pollingRef.current = setInterval(async () => {
-      try {
-        const response = await fetch('/api/merged/drugs/sync/progress');
-        if (response.ok) {
-          const data = await response.json() as MergeProgress;
-          setMergeProgress(data);
-          setNow(Date.now());
-
-          if (data.status === 'completed' || data.status === 'error') {
-            stopPolling();
-            if (data.status === 'completed') {
-              toast.success('合并同步任务已完成', { description: '正在重载数据...' });
-              handleSearch(); // 刷新数据
-              loadSchedulerConfig(); // 刷新数据收集时间和调度状态
-            } else {
-              toast.error('合并同步任务失败', { description: data.error });
-              loadSchedulerConfig(); // 出错也要更新调度状态以清除 running
-            }
-          }
-        }
-      } catch (error) {
-        console.error('获取同步进度失败', error);
-      }
-    }, 1000);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadSchedulerConfig]);
+  const applyMergeProgress = useCallback((next: MergeProgress) => {
+    setMergeProgress(next);
+    lastMergeStatusRef.current = next.status;
+    if (typeof window === 'undefined') return;
+    if (next.status === 'idle') {
+      window.sessionStorage.removeItem(MERGED_PROGRESS_STORAGE_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(MERGED_PROGRESS_STORAGE_KEY, JSON.stringify(next));
+  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -234,21 +269,73 @@ export default function MergedDrugPage() {
     }
   }, []);
 
+  /** 轮询合并进度 */
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) return;
+
+    pollingRef.current = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/merged/drugs/sync/progress?_t=${Date.now()}`, { cache: 'no-store' });
+        if (response.ok) {
+          const prevStatus = lastMergeStatusRef.current;
+          const data = await response.json() as MergeProgress;
+          applyMergeProgress(data);
+          setNow(Date.now());
+
+          if (data.status === 'completed' || data.status === 'error') {
+            stopPolling();
+            // 任务结束后立刻刷新调度状态，推动按钮恢复为可点击
+            loadSchedulerConfig();
+            if (data.status === 'completed' && prevStatus === 'running') {
+              toast.success('合并同步任务已完成', { description: '正在重载数据...' });
+              handleSearch(); // 刷新数据
+            } else if (data.status === 'error' && prevStatus === 'running') {
+              toast.error('合并同步任务失败', { description: data.error });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('获取同步进度失败', error);
+      }
+    }, 1000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyMergeProgress, loadSchedulerConfig, stopPolling]);
+
   /** 自动状态探针（用于响应系统的自动调度触发事件） */
   useEffect(() => {
+    const intervalMs = schedulerConfig.runningStatus === 'running' ? 1000 : 5000;
     schedulerPollingRef.current = setInterval(() => {
+      // 无论当前状态如何，都先刷新调度器状态，避免 running_status 卡住不更新
+      loadSchedulerConfig();
+
       // 探针如果发现正在 running 但前端没有开启详尽的 progress 轮询，则开启一下
       if (schedulerConfig.runningStatus === 'running' && mergeProgress.status !== 'running') {
         startPolling();
-      } else {
-        loadSchedulerConfig();
       }
-    }, 5000); // 调度器检查频率低些（5秒）
+    }, intervalMs);
 
     return () => {
       if (schedulerPollingRef.current) clearInterval(schedulerPollingRef.current);
     };
   }, [schedulerConfig.runningStatus, mergeProgress.status, loadSchedulerConfig, startPolling]);
+
+  useEffect(() => {
+    if (schedulerConfig.runningStatus !== 'idle') return;
+    if (mergeProgress.status !== 'running') return;
+
+    fetch(`/api/merged/drugs/sync/progress?_t=${Date.now()}`, { cache: 'no-store' })
+      .then(res => res.json())
+      .then((data: MergeProgress) => {
+        applyMergeProgress(data);
+        if (data.status !== 'running') {
+          stopPolling();
+        }
+      })
+      .catch(() => {
+        applyMergeProgress(DEFAULT_MERGE_PROGRESS);
+        stopPolling();
+      });
+  }, [schedulerConfig.runningStatus, mergeProgress.status, applyMergeProgress, stopPolling]);
 
 
   /** 开始手动合并同步操作 */
@@ -259,12 +346,12 @@ export default function MergedDrugPage() {
 
       if (response.ok) {
         toast.success(result.message);
-        setMergeProgress(prev => ({
+        applyMergeProgress({
           ...DEFAULT_MERGE_PROGRESS,
           status: 'running',
           phase: '正在启动归档...',
           startTime: Date.now()
-        }));
+        });
         startPolling();
         loadSchedulerConfig(); // 强刷状态
       } else {
@@ -381,17 +468,24 @@ const handleFilterChange = (key: string, value: string) => {
     loadDrugs(1);
     loadSchedulerConfig(true);
 
-    fetch('/api/merged/drugs/sync/progress')
+    if (persistedMergeProgressRef.current?.status === 'running') {
+      startPolling();
+    }
+
+    fetch(`/api/merged/drugs/sync/progress?_t=${Date.now()}`, { cache: 'no-store' })
       .then(res => res.json())
       .then((data: MergeProgress) => {
+        applyMergeProgress(data);
         if (data.status === 'running') {
-          setMergeProgress(data);
           startPolling();
+        } else {
+          stopPolling();
         }
       })
       .catch();
 
     return stopPolling;
+    // 只在首次进入页面时初始化，避免重复触发请求/轮询导致死循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -415,6 +509,15 @@ const handleFilterChange = (key: string, value: string) => {
 
     loadDrugs(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchKeyword, filterValues]);
+
+  // 记忆查询条件（菜单切换后返回时恢复）
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.sessionStorage.setItem(MERGED_QUERY_STORAGE_KEY, JSON.stringify({
+      searchKeyword,
+      filterValues,
+    }));
   }, [searchKeyword, filterValues]);
 
   return (
@@ -482,7 +585,7 @@ const handleFilterChange = (key: string, value: string) => {
 
       {/* 操作按钮：使用「手动合并」替代默认的「手动抓取」 */}
       <ActionBar
-        fetchStatus={mergeProgress.status === 'running' || schedulerConfig.runningStatus === 'running' ? 'running' : 'idle'}
+        fetchStatus={schedulerConfig.runningStatus === 'running' ? 'running' : 'idle'}
         exporting={exporting}
         total={pagination.total}
         onFetch={handleMergeAction}

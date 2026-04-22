@@ -15,6 +15,8 @@ import {
   resetProgress,
 } from './progress-manager';
 
+const PROGRESS_SOURCE = 'gd_pubonln' as const;
+
 // 挂网药品信息接口 - 完整字段
 export interface PubonlnDrugInfo {
   id?: string;
@@ -204,7 +206,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
   try {
     globalNewCount = 0;
     globalTotalProcessed = 0;
-    resetProgress();
+    resetProgress(PROGRESS_SOURCE);
     
     console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
 
@@ -219,13 +221,13 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
     
     console.log(`[PubonlnScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
     
-    startProgress(totalPages);
-    updateProgress({ totalCount: totalRecords });
+    startProgress(PROGRESS_SOURCE, totalPages);
+    updateProgress(PROGRESS_SOURCE, { totalCount: totalRecords });
 
     await savePubonlnDrugBatch(firstPageData.drugs);
     globalTotalProcessed += firstPageData.drugs.length;
     
-    updateProgress({
+    updateProgress(PROGRESS_SOURCE, {
       processedCount: globalTotalProcessed,
       newCount: globalNewCount,
       updateCount: 0,
@@ -234,7 +236,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
 
     if (totalPages <= 1) {
       console.log(`[PubonlnScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条`);
-      completeProgress();
+      completeProgress(PROGRESS_SOURCE);
       return {
         success: true,
         message: `抓取完成，共处理 ${globalTotalProcessed} 条数据`,
@@ -258,7 +260,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
             await savePubonlnDrugBatch(pageData.drugs);
             globalTotalProcessed += pageData.drugs.length;
             
-            updateProgress({
+            updateProgress(PROGRESS_SOURCE, {
               processedCount: globalTotalProcessed,
               newCount: globalNewCount,
               updateCount: 0,
@@ -278,7 +280,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
 
     console.log(`[PubonlnScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条`);
 
-    completeProgress();
+    completeProgress(PROGRESS_SOURCE);
 
     return {
       success: true,
@@ -290,7 +292,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
     console.error('[PubonlnScraper] 抓取错误:', error);
     const errorMsg = error instanceof Error ? error.message : '未知错误';
     
-    setErrorProgress(errorMsg);
+    setErrorProgress(PROGRESS_SOURCE, errorMsg);
     
     return {
       success: false,

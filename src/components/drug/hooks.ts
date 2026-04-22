@@ -10,12 +10,65 @@ import type {
 } from './types';
 import type { FilterValues } from './SearchCard';
 
+type ModuleQueryState = {
+  searchKeyword: string;
+  filterValues: FilterValues;
+};
+
+const buildModuleQueryStorageKey = (drugsApi: string) => `drug-module-query:${drugsApi}`;
+const buildProgressStorageKey = (progressApi: string) => `drug-module-progress:${progressApi}`;
+
+const readModuleQueryState = (storageKey: string): ModuleQueryState | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ModuleQueryState>;
+    return {
+      searchKeyword: typeof parsed.searchKeyword === 'string' ? parsed.searchKeyword : '',
+      filterValues: parsed.filterValues && typeof parsed.filterValues === 'object' ? parsed.filterValues : {},
+    };
+  } catch {
+    return null;
+  }
+};
+
+const readProgressState = (storageKey: string): FetchProgress | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<FetchProgress>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!['idle', 'running', 'completed', 'error'].includes(String(parsed.status))) return null;
+    return {
+      status: parsed.status as FetchProgress['status'],
+      currentPage: Number(parsed.currentPage ?? 0),
+      totalPages: Number(parsed.totalPages ?? 0),
+      processedCount: Number(parsed.processedCount ?? 0),
+      totalCount: Number(parsed.totalCount ?? 0),
+      newCount: Number(parsed.newCount ?? 0),
+      updateCount: Number(parsed.updateCount ?? 0),
+      startTime: parsed.startTime ?? null,
+      endTime: parsed.endTime ?? null,
+      error: typeof parsed.error === 'string' ? parsed.error : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
 /**
  * 药品模块通用 Hook
  * 封装药品列表加载、搜索、分页、导出、进度轮询和调度器配置等通用逻辑
  * 通过 apiConfig 参数区分不同模块的 API 路径
  */
 export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApiConfig) {
+  const queryStorageKey = buildModuleQueryStorageKey(apiConfig.drugsApi);
+  const progressStorageKey = buildProgressStorageKey(apiConfig.progressApi);
+  const persistedQueryState = readModuleQueryState(queryStorageKey);
+  const persistedProgressState = readProgressState(progressStorageKey);
+
   // 药品列表数据
   const [drugs, setDrugs] = useState<T[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>({
@@ -24,14 +77,14 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     total: 0,
     totalPages: 0,
   });
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [filterValues, setFilterValues] = useState<FilterValues>({});
+  const [searchKeyword, setSearchKeyword] = useState(persistedQueryState?.searchKeyword ?? '');
+  const [filterValues, setFilterValues] = useState<FilterValues>(persistedQueryState?.filterValues ?? {});
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // 抓取进度状态
-  const [progress, setProgress] = useState<FetchProgress>({
+  const [progress, setProgress] = useState<FetchProgress>(() => persistedProgressState ?? {
     status: 'idle',
     currentPage: 0,
     totalPages: 0,
@@ -137,6 +190,17 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     }
   }, []);
 
+  /** 更新并持久化进度 */
+  const applyProgress = useCallback((next: FetchProgress) => {
+    setProgress(next);
+    if (typeof window === 'undefined') return;
+    if (next.status === 'idle') {
+      window.sessionStorage.removeItem(progressStorageKey);
+      return;
+    }
+    window.sessionStorage.setItem(progressStorageKey, JSON.stringify(next));
+  }, [progressStorageKey]);
+
   /** 开始进度轮询 */
   const startProgressPolling = useCallback(() => {
     if (progressIntervalRef.current) {
@@ -147,7 +211,7 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
       try {
         const response = await fetch(apiConfig.progressApi);
         const data: FetchProgress = await response.json();
-        setProgress(data);
+        applyProgress(data);
 
         // 同时刷新调度器配置以更新运行状态
         loadSchedulerConfig();
@@ -168,7 +232,33 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
         console.error('获取进度失败:', e);
       }
     }, 1000);
-  }, [apiConfig.progressApi, loadDrugs, loadSchedulerConfig, stopProgressPolling]);
+  }, [apiConfig.progressApi, applyProgress, loadDrugs, loadSchedulerConfig, stopProgressPolling]);
+
+  /** 加载当前进度（用于刷新页面后恢复状态） */
+  const loadProgress = useCallback(async () => {
+    const cached = readProgressState(progressStorageKey);
+    if (cached && cached.status === 'running') {
+      applyProgress(cached);
+      startProgressPolling();
+    }
+
+    try {
+      const response = await fetch(apiConfig.progressApi);
+      const data: FetchProgress = await response.json();
+      // 如果接口暂时回 idle，但本地存在 running 快照，则先保留运行态卡片
+      if (data.status === 'idle' && cached?.status === 'running') {
+        return;
+      }
+      applyProgress(data);
+
+      // 刷新页面后若任务还在运行，自动恢复轮询
+      if (data.status === 'running') {
+        startProgressPolling();
+      }
+    } catch (e) {
+      console.error('加载当前进度失败:', e);
+    }
+  }, [apiConfig.progressApi, applyProgress, progressStorageKey, startProgressPolling]);
 
   /** 手动抓取 */
   const handleFetch = async () => {
@@ -304,7 +394,17 @@ const handleFilterChange = (key: string, value: string) => {
   useEffect(() => {
     loadDrugs();
     loadSchedulerConfig();
-  }, [loadDrugs, loadSchedulerConfig]);
+    loadProgress();
+  }, [loadDrugs, loadSchedulerConfig, loadProgress]);
+
+  // 记忆查询条件（菜单切换后返回时恢复）
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.sessionStorage.setItem(queryStorageKey, JSON.stringify({
+      searchKeyword,
+      filterValues,
+    }));
+  }, [queryStorageKey, searchKeyword, filterValues]);
 
   // 清理定时器
   useEffect(() => {

@@ -5,6 +5,8 @@ import { updateProgress, startProgress, completeProgress, setErrorProgress, rese
 import { batchFetchWithConcurrency } from './drug-detail-worker';
 import { promisePool } from './concurrent-pool';
 
+const PROGRESS_SOURCE = 'gz_drug' as const;
+
 // 药品信息接口 - 完全匹配API返回字段（共23个API字段）
 export interface DrugInfo {
   id?: string;
@@ -165,7 +167,7 @@ export function resetScraperProgress(): void {
   globalNewCount = 0;
   globalUpdateCount = 0;
   globalTotalProcessed = 0;
-  resetProgress();
+  resetProgress(PROGRESS_SOURCE);
 }
 
 /**
@@ -210,7 +212,7 @@ export async function scrapeDrugInfo(
     const pageConcurrency = 3; // 并发抓取3页（避免服务器压力过大）
 
     // 初始化进度
-    startProgress(maxPages);
+    startProgress(PROGRESS_SOURCE, maxPages);
 
     // 获取第一页数据确定总数
     console.log('[DrugScraper] 正在获取第一页数据...');
@@ -235,7 +237,7 @@ export async function scrapeDrugInfo(
     });
     await saveDrugBatchToDatabase(firstDrugsWithDetails);
     
-    updateProgress({
+    updateProgress(PROGRESS_SOURCE, {
       currentPage: 1,
       totalPages: totalPages,
       totalCount: totalRecords,
@@ -247,7 +249,7 @@ export async function scrapeDrugInfo(
     // 如果只有一页，直接返回
     if (totalPages <= 1) {
       console.log(`[DrugScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`);
-      completeProgress();
+      completeProgress(PROGRESS_SOURCE);
       return {
         success: true,
         message: `抓取完成，共处理 ${globalTotalProcessed} 条数据，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`,
@@ -298,7 +300,7 @@ export async function scrapeDrugInfo(
           console.log(`[DrugScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords} 条`);
 
           // 更新进度
-          updateProgress({
+          updateProgress(PROGRESS_SOURCE, {
             currentPage: page,
             totalPages: totalPages,
             totalCount: totalRecords,
@@ -318,7 +320,7 @@ export async function scrapeDrugInfo(
     console.log(`[DrugScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`);
 
     // 完成进度
-    completeProgress();
+    completeProgress(PROGRESS_SOURCE);
 
     return {
       success: true,
@@ -330,7 +332,7 @@ export async function scrapeDrugInfo(
   } catch (error) {
     console.error('[DrugScraper] 抓取错误:', error);
     const errorMsg = error instanceof Error ? error.message : '未知错误';
-    setErrorProgress(errorMsg);
+    setErrorProgress(PROGRESS_SOURCE, errorMsg);
     return {
       success: false,
       message: `抓取失败: ${errorMsg}`,

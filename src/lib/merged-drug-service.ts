@@ -157,6 +157,7 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
     const { data, error } = await client
       .from('pubonln_drug_info')
       .select(selectFields)
+      .order('id', { ascending: true })
       .range(offset, offset + batchSize - 1);
       
     if (error) throw error;
@@ -187,6 +188,7 @@ async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
     const { data, error } = await client
       .from('drug_info')
       .select(selectFields)
+      .order('id', { ascending: true })
       .range(offset, offset + batchSize - 1);
       
     if (error) throw error;

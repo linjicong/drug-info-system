@@ -16,84 +16,10 @@ export interface FetchProgress {
   error: string | null;
 }
 
-// 全局进度状态
-let currentProgress: FetchProgress = {
-  status: 'idle',
-  currentPage: 0,
-  totalPages: 0,
-  processedCount: 0,
-  totalCount: 0,
-  newCount: 0,
-  updateCount: 0,
-  startTime: null,
-  endTime: null,
-  error: null,
-};
+export type ProgressSource = 'gz_drug' | 'gd_pubonln';
 
-// SSE 客户端连接列表
-const clients = new Set<{
-  controller: ReadableStreamDefaultController;
-  encoder: TextEncoder;
-}>();
-
-/**
- * 获取当前进度
- */
-export function getProgress(): FetchProgress {
-  return { ...currentProgress };
-}
-
-/**
- * 更新进度
- */
-export function updateProgress(updates: Partial<FetchProgress>): void {
-  currentProgress = { ...currentProgress, ...updates };
-  broadcastProgress();
-}
-
-/**
- * 开始抓取
- */
-export function startProgress(totalPages: number): void {
-  currentProgress = {
-    status: 'running',
-    currentPage: 0,
-    totalPages,
-    processedCount: 0,
-    totalCount: 0,
-    newCount: 0,
-    updateCount: 0,
-    startTime: Date.now(),
-    endTime: null,
-    error: null,
-  };
-  broadcastProgress();
-}
-
-/**
- * 完成抓取
- */
-export function completeProgress(): void {
-  currentProgress.status = 'completed';
-  currentProgress.endTime = Date.now();
-  broadcastProgress();
-}
-
-/**
- * 设置错误
- */
-export function setErrorProgress(error: string): void {
-  currentProgress.status = 'error';
-  currentProgress.error = error;
-  currentProgress.endTime = Date.now();
-  broadcastProgress();
-}
-
-/**
- * 重置进度
- */
-export function resetProgress(): void {
-  currentProgress = {
+function createIdleProgress(): FetchProgress {
+  return {
     status: 'idle',
     currentPage: 0,
     totalPages: 0,
@@ -105,14 +31,86 @@ export function resetProgress(): void {
     endTime: null,
     error: null,
   };
-  broadcastProgress();
+}
+
+// 按数据源维护独立进度状态
+const progressBySource: Record<ProgressSource, FetchProgress> = {
+  gz_drug: createIdleProgress(),
+  gd_pubonln: createIdleProgress(),
+};
+
+// SSE 客户端连接列表
+const clients = new Set<{
+  controller: ReadableStreamDefaultController;
+  encoder: TextEncoder;
+}>();
+
+/**
+ * 获取当前进度
+ */
+export function getProgress(source: ProgressSource): FetchProgress {
+  return { ...progressBySource[source] };
+}
+
+/**
+ * 更新进度
+ */
+export function updateProgress(source: ProgressSource, updates: Partial<FetchProgress>): void {
+  progressBySource[source] = { ...progressBySource[source], ...updates };
+  broadcastProgress(source);
+}
+
+/**
+ * 开始抓取
+ */
+export function startProgress(source: ProgressSource, totalPages: number): void {
+  progressBySource[source] = {
+    status: 'running',
+    currentPage: 0,
+    totalPages,
+    processedCount: 0,
+    totalCount: 0,
+    newCount: 0,
+    updateCount: 0,
+    startTime: Date.now(),
+    endTime: null,
+    error: null,
+  };
+  broadcastProgress(source);
+}
+
+/**
+ * 完成抓取
+ */
+export function completeProgress(source: ProgressSource): void {
+  progressBySource[source].status = 'completed';
+  progressBySource[source].endTime = Date.now();
+  broadcastProgress(source);
+}
+
+/**
+ * 设置错误
+ */
+export function setErrorProgress(source: ProgressSource, error: string): void {
+  progressBySource[source].status = 'error';
+  progressBySource[source].error = error;
+  progressBySource[source].endTime = Date.now();
+  broadcastProgress(source);
+}
+
+/**
+ * 重置进度
+ */
+export function resetProgress(source: ProgressSource): void {
+  progressBySource[source] = createIdleProgress();
+  broadcastProgress(source);
 }
 
 /**
  * 广播进度到所有 SSE 客户端
  */
-function broadcastProgress(): void {
-  const data = `data: ${JSON.stringify(currentProgress)}\n\n`;
+function broadcastProgress(source: ProgressSource): void {
+  const data = `data: ${JSON.stringify(progressBySource[source])}\n\n`;
   const encoded = new TextEncoder().encode(data);
   
   for (const client of clients) {
@@ -128,13 +126,13 @@ function broadcastProgress(): void {
 /**
  * 添加 SSE 客户端
  */
-export function addClient(controller: ReadableStreamDefaultController): TextEncoder {
+export function addClient(source: ProgressSource, controller: ReadableStreamDefaultController): TextEncoder {
   const encoder = new TextEncoder();
   const client = { controller, encoder };
   clients.add(client);
   
   // 立即发送当前进度
-  const data = `data: ${JSON.stringify(currentProgress)}\n\n`;
+  const data = `data: ${JSON.stringify(progressBySource[source])}\n\n`;
   controller.enqueue(encoder.encode(data));
   
   return encoder;

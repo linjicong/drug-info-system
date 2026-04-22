@@ -4,45 +4,106 @@ import React, { useState, useEffect } from 'react';
 import { Calendar as CalendarIcon, Download, Clock, Database, ChevronLeft, ChevronRight, RefreshCw, CalendarDays } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 
+const LEDGER_HISTORY_QUERY_STORAGE_KEY = 'ledger-history-query-state';
+
+type LedgerHistoryQueryState = {
+  productName: string;
+  nationalDrugCode: string;
+  companyName: string;
+  minPacQuantity: string;
+  minMeasureUnit: string;
+  startDate: string;
+  endDate: string;
+};
+
+type LedgerHistoryApiQuery = LedgerHistoryQueryState;
+
+const readLedgerHistoryQueryState = (): LedgerHistoryQueryState | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(LEDGER_HISTORY_QUERY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LedgerHistoryQueryState>;
+    return {
+      productName: typeof parsed.productName === 'string' ? parsed.productName : '',
+      nationalDrugCode: typeof parsed.nationalDrugCode === 'string' ? parsed.nationalDrugCode : '',
+      companyName: typeof parsed.companyName === 'string' ? parsed.companyName : '',
+      minPacQuantity: typeof parsed.minPacQuantity === 'string' ? parsed.minPacQuantity : '',
+      minMeasureUnit: typeof parsed.minMeasureUnit === 'string' ? parsed.minMeasureUnit : '',
+      startDate: typeof parsed.startDate === 'string' ? parsed.startDate : '',
+      endDate: typeof parsed.endDate === 'string' ? parsed.endDate : '',
+    };
+  } catch {
+    return null;
+  }
+};
+
 export default function LedgerHistoryPage() {
-  const [data, setData] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [weeklyExporting, setWeeklyExporting] = useState(false);
-  const [productName, setProductName] = useState('');
-  const [nationalDrugCode, setNationalDrugCode] = useState('');
-  const [companyName, setCompanyName] = useState('');
-  const [minPacQuantity, setMinPacQuantity] = useState('');
-  const [minMeasureUnit, setMinMeasureUnit] = useState('');
-  // 默认查询近一年的数据
   const today = new Date().toISOString().split('T')[0];
   const oneYearAgo = new Date(new Date().setFullYear(new Date().getFullYear() - 1)).toISOString().split('T')[0];
-  const [startDate, setStartDate] = useState(oneYearAgo);
-  const [endDate, setEndDate] = useState(today);
+  const persistedQueryState = readLedgerHistoryQueryState();
+
+  const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [weeklyExporting, setWeeklyExporting] = useState(false);
+  const [productName, setProductName] = useState(persistedQueryState?.productName ?? '');
+  const [nationalDrugCode, setNationalDrugCode] = useState(persistedQueryState?.nationalDrugCode ?? '');
+  const [companyName, setCompanyName] = useState(persistedQueryState?.companyName ?? '');
+  const [minPacQuantity, setMinPacQuantity] = useState(persistedQueryState?.minPacQuantity ?? '');
+  const [minMeasureUnit, setMinMeasureUnit] = useState(persistedQueryState?.minMeasureUnit ?? '');
+  const [startDate, setStartDate] = useState(persistedQueryState?.startDate || oneYearAgo);
+  const [endDate, setEndDate] = useState(persistedQueryState?.endDate || today);
+  const [appliedQuery, setAppliedQuery] = useState<LedgerHistoryApiQuery>({
+    productName: persistedQueryState?.productName ?? '',
+    nationalDrugCode: persistedQueryState?.nationalDrugCode ?? '',
+    companyName: persistedQueryState?.companyName ?? '',
+    minPacQuantity: persistedQueryState?.minPacQuantity ?? '',
+    minMeasureUnit: persistedQueryState?.minMeasureUnit ?? '',
+    startDate: persistedQueryState?.startDate || oneYearAgo,
+    endDate: persistedQueryState?.endDate || today,
+  });
   
   // 分页状态
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const pageSize = 15;
+  const [hasMounted, setHasMounted] = useState(false);
 
-  const fetchHistory = async () => {
+  const buildHistoryUrl = (query: LedgerHistoryApiQuery, pageNum: number, size: number) => {
+    const url = new URL(window.location.origin + '/api/ledger/history');
+    if (query.productName) url.searchParams.append('productName', query.productName);
+    if (query.nationalDrugCode) url.searchParams.append('nationalDrugCode', query.nationalDrugCode);
+    if (query.companyName) url.searchParams.append('companyName', query.companyName);
+    if (query.minPacQuantity) url.searchParams.append('minPacQuantity', query.minPacQuantity);
+    if (query.minMeasureUnit) url.searchParams.append('minMeasureUnit', query.minMeasureUnit);
+    if (query.startDate) url.searchParams.append('startDate', query.startDate);
+    if (query.endDate) url.searchParams.append('endDate', query.endDate);
+    url.searchParams.append('page', pageNum.toString());
+    url.searchParams.append('pageSize', size.toString());
+    return url;
+  };
+
+  const fetchHistory = async (queryOverride?: LedgerHistoryApiQuery, pageOverride?: number) => {
     setLoading(true);
     try {
-      const url = new URL(window.location.origin + '/api/ledger/history');
-      if (productName) url.searchParams.append('productName', productName);
-      if (nationalDrugCode) url.searchParams.append('nationalDrugCode', nationalDrugCode);
-      if (companyName) url.searchParams.append('companyName', companyName);
-      if (minPacQuantity) url.searchParams.append('minPacQuantity', minPacQuantity);
-      if (minMeasureUnit) url.searchParams.append('minMeasureUnit', minMeasureUnit);
-      if (startDate) url.searchParams.append('startDate', startDate);
-      if (endDate) url.searchParams.append('endDate', endDate);
-      url.searchParams.append('page', page.toString());
-      url.searchParams.append('pageSize', pageSize.toString());
-
+      const currentQuery: LedgerHistoryApiQuery = queryOverride ?? {
+        productName,
+        nationalDrugCode,
+        companyName,
+        minPacQuantity,
+        minMeasureUnit,
+        startDate,
+        endDate,
+      };
+      const currentPage = pageOverride ?? page;
+      const url = buildHistoryUrl(currentQuery, currentPage, pageSize);
       const res = await fetch(url.toString());
       const resData = await res.json();
       if (resData.success) {
         setData(resData.data);
         setTotal(resData.pagination?.total || 0);
+        setAppliedQuery(currentQuery);
       }
     } catch (e) {
       console.error(e);
@@ -55,36 +116,118 @@ export default function LedgerHistoryPage() {
     fetchHistory();
   }, [page, startDate, endDate]); // 日期或页码改变时重新加载
 
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hasMounted) return;
+    const timer = window.setTimeout(() => {
+      if (page === 1) fetchHistory();
+      else setPage(1);
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [productName, nationalDrugCode, companyName, minPacQuantity, minMeasureUnit]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.sessionStorage.setItem(LEDGER_HISTORY_QUERY_STORAGE_KEY, JSON.stringify({
+      productName,
+      nationalDrugCode,
+      companyName,
+      minPacQuantity,
+      minMeasureUnit,
+      startDate,
+      endDate,
+    }));
+  }, [productName, nationalDrugCode, companyName, minPacQuantity, minMeasureUnit, startDate, endDate]);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (page === 1) fetchHistory();
     else setPage(1); // 触发 effect
   };
 
-  const exportToExcel = () => {
-    if (data.length === 0) return alert('当前没有可导出的数据');
-    
-    // 映射导出字段
-    const exportData = data.map(item => ({
-      '统计日期': item.stat_date,
-      '产品名称': item.product_name,
-      '医保编码': item.national_drug_code || '-',
-      '剂型': item.dosform || '-',
-      '生产企业': item.company_name || '-',
-      '规格': item.spec || '-',
-      '最小包装数量': item.min_pac_quantity || '-',
-      '最小包装单位': item.min_pac_unit || '-',
-      '最小计量单位': item.min_measure_unit || '-',
-      '药品挂网类别': item.drug_net_type || '-',
-      '挂网时间': item.net_time || '-',
-      'GPO挂网价格(元)': item.gpo_price !== null ? Number(item.gpo_price).toFixed(2) : '-',
-      '省平台挂网价格(元)': item.provincial_price !== null ? Number(item.provincial_price).toFixed(2) : '-'
-    }));
+  const handleReset = () => {
+    const resetQuery: LedgerHistoryApiQuery = {
+      productName: '',
+      nationalDrugCode: '',
+      companyName: '',
+      minPacQuantity: '',
+      minMeasureUnit: '',
+      startDate: oneYearAgo,
+      endDate: today,
+    };
 
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, '台账历史');
-    XLSX.writeFile(workbook, `药品台账_${startDate}_至_${endDate}.xlsx`);
+    setProductName('');
+    setNationalDrugCode('');
+    setCompanyName('');
+    setMinPacQuantity('');
+    setMinMeasureUnit('');
+    setStartDate(oneYearAgo);
+    setEndDate(today);
+    if (page === 1) {
+      fetchHistory(resetQuery, 1);
+    } else {
+      setPage(1);
+    }
+  };
+
+  const exportToExcel = async () => {
+    if (total === 0) return alert('当前没有可导出的数据');
+
+    setExporting(true);
+    try {
+      const exportPageSize = 1000;
+      const allRows: any[] = [];
+      let currentPage = 1;
+      let totalPages = 1;
+
+      while (currentPage <= totalPages) {
+        const url = buildHistoryUrl(appliedQuery, currentPage, exportPageSize);
+        const res = await fetch(url.toString());
+        const resData = await res.json();
+        if (!resData.success) {
+          throw new Error(resData.message || '导出查询失败');
+        }
+
+        const pageRows = Array.isArray(resData.data) ? resData.data : [];
+        allRows.push(...pageRows);
+        totalPages = Math.max(1, Number(resData.pagination?.totalPages || 1));
+        currentPage += 1;
+      }
+
+      if (allRows.length === 0) {
+        return alert('当前查询没有可导出的数据');
+      }
+
+      const exportData = allRows.map(item => ({
+        '统计日期': item.stat_date,
+        '产品名称': item.product_name,
+        '医保编码': item.national_drug_code || '-',
+        '剂型': item.dosform || '-',
+        '生产企业': item.company_name || '-',
+        '规格': item.spec || '-',
+        '最小包装数量': item.min_pac_quantity || '-',
+        '最小包装单位': item.min_pac_unit || '-',
+        '最小计量单位': item.min_measure_unit || '-',
+        '药品挂网类别': item.drug_net_type || '-',
+        '挂网时间': item.net_time || '-',
+        'GPO挂网价格(元)': item.gpo_price !== null ? Number(item.gpo_price).toFixed(2) : '-',
+        '省平台挂网价格(元)': item.provincial_price !== null ? Number(item.provincial_price).toFixed(2) : '-'
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, '台账历史');
+      XLSX.writeFile(workbook, `药品台账_${appliedQuery.startDate}_至_${appliedQuery.endDate}.xlsx`);
+    } catch (e) {
+      console.error(e);
+      alert('导出失败，请稍后重试');
+    } finally {
+      setExporting(false);
+    }
   };
 
   /**
@@ -375,10 +518,11 @@ export default function LedgerHistoryPage() {
             </button>
             <button 
               onClick={exportToExcel}
-              className="px-4 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-sm font-medium transition-colors flex items-center gap-2 border border-emerald-200"
+              disabled={exporting}
+              className="px-4 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-sm font-medium transition-colors flex items-center gap-2 border border-emerald-200 disabled:opacity-60"
             >
-              <Download className="h-4 w-4" />
-              导出当前查询
+              {exporting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {exporting ? '导出中...' : '导出当前查询'}
             </button>
             <button 
               onClick={exportWeeklyToExcel}
@@ -469,6 +613,13 @@ export default function LedgerHistoryPage() {
 
             <button type="submit" className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium shadow-sm w-full md:w-auto">
               筛选
+            </button>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="px-6 py-2.5 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-sm font-medium shadow-sm w-full md:w-auto"
+            >
+              重置
             </button>
           </form>
         </div>

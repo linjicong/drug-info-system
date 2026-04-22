@@ -5,7 +5,7 @@ import { getProgress } from '@/lib/progress-manager';
  * GET /api/drugs/progress - 获取抓取进度（轮询方式）
  */
 export async function GET() {
-  const progress = getProgress();
+  const progress = getProgress('gz_drug');
   return NextResponse.json(progress);
 }
 
