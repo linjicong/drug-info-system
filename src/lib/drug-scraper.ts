@@ -204,29 +204,46 @@ export async function scrapeDrugInfo(
     
     console.log('[DrugScraper] 开始抓取药品信息...');
 
-    // 先清空旧数据
-    await clearDrugTable();
-
     const pageSize = 1000;
     const maxPages = 50;
     const pageConcurrency = 3; // 并发抓取3页（避免服务器压力过大）
 
-    // 初始化进度
+    // 初始化进度（先展示进度卡片，让前端立即有反馈）
     startProgress(PROGRESS_SOURCE, maxPages);
 
-    // 获取第一页数据确定总数
+    // 先尝试抓取第一页数据，验证接口可用且确定总数
+    // 这样在源站不可用时，不会把旧数据清空
     console.log('[DrugScraper] 正在获取第一页数据...');
     const firstPageData = await fetchDrugPage(1, pageSize);
     const totalRecords = firstPageData.total || 0;
     const totalPages = Math.min(Math.ceil(totalRecords / pageSize), maxPages);
-    
+
     console.log(`[DrugScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
 
-    // 处理第一页数据
-    globalTotalProcessed += firstPageData.drugs.length;
-    
+    // 同步一次"首页抓取完成，正在获取详情"的进度，避免卡片一直停留在 0/50
+    updateProgress(PROGRESS_SOURCE, {
+      currentPage: 1,
+      totalPages: totalPages,
+      totalCount: totalRecords,
+      processedCount: 0,
+      newCount: 0,
+      updateCount: 0,
+    });
+
+    // 获取第一页药品的详情时间（期间按完成量增量更新进度，避免用户看到"卡在 0"）
+    // 使用全局 globalTotalProcessed 作为原子计数器，后续并发抓取共享递增，保持单调递增
     console.log(`[DrugScraper] 正在获取第 1 页药品的详情时间...`);
-    const firstDetailTimes = await batchFetchDrugDetailTimes(firstPageData.drugs);
+    const firstDetailTimes = await batchFetchDrugDetailTimes(
+      firstPageData.drugs,
+      () => {
+        globalTotalProcessed += 1;
+        if (globalTotalProcessed % 20 === 0) {
+          updateProgress(PROGRESS_SOURCE, {
+            processedCount: globalTotalProcessed,
+          });
+        }
+      }
+    );
     const firstDrugsWithDetails = firstPageData.drugs.map(drug => {
       const detail = firstDetailTimes.get(drug.procurecatalog_id) || {};
       return {
@@ -235,8 +252,13 @@ export async function scrapeDrugInfo(
         price_formation_time: detail.price_formation_time,
       };
     });
+
+    // 第一页抓取成功后，再清空旧数据并写入第一页
+    // 这样在源站返回异常时，旧数据不会被误删
+    await clearDrugTable();
     await saveDrugBatchToDatabase(firstDrugsWithDetails);
-    
+
+    // 首页详情已在 batchFetchDrugDetailTimes 回调中按条递增，这里做一次对齐性刷新
     updateProgress(PROGRESS_SOURCE, {
       currentPage: 1,
       totalPages: totalPages,
@@ -271,18 +293,38 @@ export async function scrapeDrugInfo(
       async (page) => {
         try {
           console.log(`[DrugScraper] 正在抓取第 ${page}/${totalPages} 页...`);
-          
+
           const pageData = await fetchDrugPage(page, pageSize);
 
           if (pageData.drugs.length === 0) {
             return;
           }
 
-          globalTotalProcessed += pageData.drugs.length;
+          // 页面数据抓取成功后先更新一次进度（让用户看到新页正在进行）
+          updateProgress(PROGRESS_SOURCE, {
+            currentPage: page,
+            totalPages,
+            totalCount: totalRecords,
+            processedCount: globalTotalProcessed,
+            newCount: globalNewCount,
+            updateCount: globalUpdateCount,
+          });
 
           // 获取当前页药品的挂网时间和价格形成时间
+          // 通过 onProgress 回调让 globalTotalProcessed 按条递增，前端进度平滑上升
+          // 不更新 currentPage：多页并发时 currentPage 来回跳会闪烁，统一在页面完成时更新
           console.log(`[DrugScraper] 正在获取第 ${page} 页药品的详情时间...`);
-          const detailTimes = await batchFetchDrugDetailTimes(pageData.drugs);
+          const detailTimes = await batchFetchDrugDetailTimes(
+            pageData.drugs,
+            () => {
+              globalTotalProcessed += 1;
+              if (globalTotalProcessed % 20 === 0) {
+                updateProgress(PROGRESS_SOURCE, {
+                  processedCount: globalTotalProcessed,
+                });
+              }
+            }
+          );
           
           // 合并详情时间到药品数据
           const drugsWithDetails = pageData.drugs.map(drug => {
@@ -453,11 +495,16 @@ async function fetchDrugPage(page: number, pageSize: number): Promise<{ drugs: D
 
 /**
  * 批量获取药品详情时间（高并发）
+ * @param drugs 药品任务列表
+ * @param onProgress 每完成一项时的回调，用于向前端报告增量进度
  */
-async function batchFetchDrugDetailTimes(drugs: DrugInfo[]): Promise<Map<string, { net_time?: string; price_formation_time?: string }>> {
+async function batchFetchDrugDetailTimes(
+  drugs: DrugInfo[],
+  onProgress?: (completed: number, total: number) => void
+): Promise<Map<string, { net_time?: string; price_formation_time?: string }>> {
   // 使用200并发获取
   const tasks = drugs.map(d => ({ procurecatalog_id: d.procurecatalog_id }));
-  return batchFetchWithConcurrency(tasks, 200);
+  return batchFetchWithConcurrency(tasks, 200, onProgress);
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   setRunningStatus,
   createScrapeLog,
   updateScrapeLog,
+  finalizeScrapeRun,
 } from '@/lib/unified-scheduler';
 import { startMergeProgress } from '@/lib/merged-progress-manager';
 
@@ -31,11 +32,13 @@ export async function POST() {
     const logId = await createScrapeLog(SOURCE, 'manual');
 
     // 异步执行合并同步，不阻塞响应
+    let finalStatus: 'success' | 'failed' = 'failed';
     syncMergedDrugData()
       .then(async (result) => {
+        finalStatus = result.success ? 'success' : 'failed';
         if (logId) {
           await updateScrapeLog(logId, {
-            status: result.success ? 'success' : 'failed',
+            status: finalStatus,
             total_count: 0,
             new_count: 0,
             update_count: 0,
@@ -45,6 +48,7 @@ export async function POST() {
       })
       .catch(async (err) => {
         console.error('[API] 执行合并同步任务失败:', err);
+        finalStatus = 'failed';
         if (logId) {
           await updateScrapeLog(logId, {
             status: 'failed',
@@ -56,6 +60,8 @@ export async function POST() {
         }
       })
       .finally(async () => {
+        // 同步更新 config 表的 last_run_at / last_run_status / next_run_at
+        await finalizeScrapeRun(SOURCE, finalStatus);
         await setRunningStatus(SOURCE, 'idle');
       });
 

@@ -44,7 +44,7 @@ export async function GET() {
         lastRunAt: config.last_run_at,
         lastRunStatus: config.last_run_status,
         cronSecret: config.cron_secret,
-        isRunning: config.enabled,
+        isRunning: config.running_status === 'running',
         runningStatus: config.running_status,
         latestLog: latestLog ? {
           startTime: latestLog.start_time,

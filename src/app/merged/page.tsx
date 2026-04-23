@@ -165,6 +165,19 @@ export default function MergedDrugPage() {
   const lastMergeStatusRef = useRef<MergeProgress['status']>(
     persistedMergeProgressRef.current?.status ?? 'idle'
   );
+  // 进度卡片自动隐藏定时器（完成/出错后延迟收起）
+  const progressHideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 跟踪客户端当前的合并进度状态，供 setInterval 回调读取最新值
+  const mergeStatusRef = useRef<MergeProgress['status']>(
+    persistedMergeProgressRef.current?.status ?? 'idle'
+  );
+
+  const clearProgressHideTimer = useCallback(() => {
+    if (progressHideTimerRef.current) {
+      clearTimeout(progressHideTimerRef.current);
+      progressHideTimerRef.current = null;
+    }
+  }, []);
 
   // 记录搜索关键词引用
   const searchKeywordRef = useRef(searchKeyword);
@@ -254,6 +267,7 @@ export default function MergedDrugPage() {
   const applyMergeProgress = useCallback((next: MergeProgress) => {
     setMergeProgress(next);
     lastMergeStatusRef.current = next.status;
+    mergeStatusRef.current = next.status;
     if (typeof window === 'undefined') return;
     if (next.status === 'idle') {
       window.sessionStorage.removeItem(MERGED_PROGRESS_STORAGE_KEY);
@@ -261,6 +275,16 @@ export default function MergedDrugPage() {
     }
     window.sessionStorage.setItem(MERGED_PROGRESS_STORAGE_KEY, JSON.stringify(next));
   }, []);
+
+  /** 延时自动隐藏合并进度卡片，同步重置服务端进度 */
+  const scheduleHideMergeProgress = useCallback((delayMs = 3000) => {
+    clearProgressHideTimer();
+    progressHideTimerRef.current = setTimeout(() => {
+      progressHideTimerRef.current = null;
+      fetch('/api/merged/drugs/sync/progress', { method: 'DELETE' }).catch(() => {});
+      applyMergeProgress(DEFAULT_MERGE_PROGRESS);
+    }, delayMs);
+  }, [applyMergeProgress, clearProgressHideTimer]);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -279,6 +303,13 @@ export default function MergedDrugPage() {
         if (response.ok) {
           const prevStatus = lastMergeStatusRef.current;
           const data = await response.json() as MergeProgress;
+
+          // 服务端启动有延迟：期间仍是 idle，但客户端点击后已设 running，忽略 idle 避免卡片闪烁
+          if (data.status === 'idle' && mergeStatusRef.current === 'running') {
+            setNow(Date.now());
+            return;
+          }
+
           applyMergeProgress(data);
           setNow(Date.now());
 
@@ -292,6 +323,8 @@ export default function MergedDrugPage() {
             } else if (data.status === 'error' && prevStatus === 'running') {
               toast.error('合并同步任务失败', { description: data.error });
             }
+            // 完成/出错后延迟自动隐藏进度卡片
+            scheduleHideMergeProgress(data.status === 'error' ? 6000 : 3000);
           }
         }
       } catch (error) {
@@ -299,7 +332,7 @@ export default function MergedDrugPage() {
       }
     }, 1000);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyMergeProgress, loadSchedulerConfig, stopPolling]);
+  }, [applyMergeProgress, loadSchedulerConfig, stopPolling, scheduleHideMergeProgress]);
 
   /** 自动状态探针（用于响应系统的自动调度触发事件） */
   useEffect(() => {
@@ -341,24 +374,35 @@ export default function MergedDrugPage() {
   /** 开始手动合并同步操作 */
   const handleMergeAction = async () => {
     try {
+      // 新一轮合并开始，清理上一次的自动隐藏定时器
+      clearProgressHideTimer();
+
+      // 立即以占位 running 状态呈现进度卡片，避免服务端启动延迟导致卡片不出现
+      // 同时写入 sessionStorage，刷新页面也能保留进度态
+      applyMergeProgress({
+        ...DEFAULT_MERGE_PROGRESS,
+        status: 'running',
+        phase: '正在启动归档...',
+        startTime: Date.now(),
+      });
+      startPolling();
+
       const response = await fetch('/api/merged/drugs/sync', { method: 'POST' });
       const result = await response.json();
 
       if (response.ok) {
         toast.success(result.message);
-        applyMergeProgress({
-          ...DEFAULT_MERGE_PROGRESS,
-          status: 'running',
-          phase: '正在启动归档...',
-          startTime: Date.now()
-        });
-        startPolling();
         loadSchedulerConfig(); // 强刷状态
       } else {
         toast.error('提交执行失败', { description: result.message });
+        // 请求被拒绝（如 409 正在运行）或失败，回滚客户端 running 占位态
+        stopPolling();
+        applyMergeProgress(DEFAULT_MERGE_PROGRESS);
       }
     } catch {
       toast.error('网络错误', { description: '无法请求服务端，请检查连接连接是否正常' });
+      stopPolling();
+      applyMergeProgress(DEFAULT_MERGE_PROGRESS);
     }
   };
 
@@ -480,11 +524,20 @@ const handleFilterChange = (key: string, value: string) => {
           startPolling();
         } else {
           stopPolling();
+          // 刷新页面时若服务端是已完成/出错的残留状态，稍后自动隐藏
+          if (data.status === 'completed') {
+            scheduleHideMergeProgress(3000);
+          } else if (data.status === 'error') {
+            scheduleHideMergeProgress(6000);
+          }
         }
       })
       .catch();
 
-    return stopPolling;
+    return () => {
+      stopPolling();
+      clearProgressHideTimer();
+    };
     // 只在首次进入页面时初始化，避免重复触发请求/轮询导致死循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

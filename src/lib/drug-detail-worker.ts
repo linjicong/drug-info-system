@@ -86,19 +86,30 @@ async function fetchDrugDetailTime(procurecatalogId: string): Promise<DetailTime
 }
 
 /**
- * 并发池 - 控制并发数量
+ * 并发池 - 控制并发数量，支持每完成一项回调进度
  */
 async function promisePool<T, R>(
   items: T[],
   concurrency: number,
-  fn: (item: T) => Promise<R>
+  fn: (item: T) => Promise<R>,
+  onItemDone?: (completed: number, total: number) => void
 ): Promise<R[]> {
   const results: R[] = [];
   const executing: Promise<void>[] = [];
+  let completed = 0;
+  const total = items.length;
 
   for (const item of items) {
     const promise = fn(item).then(result => {
       results.push(result);
+      completed += 1;
+      if (onItemDone) {
+        try {
+          onItemDone(completed, total);
+        } catch {
+          // 忽略回调错误，不影响抓取
+        }
+      }
     });
 
     const wrapped = promise.then(() => {
@@ -119,13 +130,15 @@ async function promisePool<T, R>(
  * 高并发批量获取药品详情时间
  * @param drugs 药品任务列表
  * @param concurrency 并发数，默认200
+ * @param onProgress 每完成一项时的回调，用于向前端报告增量进度
  */
 export async function batchFetchWithConcurrency(
   drugs: { procurecatalog_id: string }[],
-  concurrency: number = 200
+  concurrency: number = 200,
+  onProgress?: (completed: number, total: number) => void
 ): Promise<Map<string, { net_time?: string; price_formation_time?: string }>> {
   const result = new Map<string, { net_time?: string; price_formation_time?: string }>();
-  
+
   if (drugs.length === 0) {
     return result;
   }
@@ -137,7 +150,8 @@ export async function batchFetchWithConcurrency(
   const results = await promisePool(
     drugs,
     concurrency,
-    async (drug) => fetchDrugDetailTime(drug.procurecatalog_id)
+    async (drug) => fetchDrugDetailTime(drug.procurecatalog_id),
+    onProgress
   );
 
   // 合并结果

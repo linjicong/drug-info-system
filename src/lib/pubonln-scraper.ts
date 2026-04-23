@@ -207,31 +207,45 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
     globalNewCount = 0;
     globalTotalProcessed = 0;
     resetProgress(PROGRESS_SOURCE);
-    
-    console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
 
-    await clearPubonlnDrugTable();
+    console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
 
     const pageSize = 500;
     const pageConcurrency = 5;
 
+    // 先初始化进度（临时总页数=1），让前端在首页抓取期间即可看到进度卡片
+    startProgress(PROGRESS_SOURCE, 1);
+
+    // 先尝试抓取第一页数据，验证接口可用并拿到总数
+    // 若源站异常则不会把旧数据清空
     const firstPageData = await fetchPubonlnDrugPage(1, pageSize);
     const totalRecords = firstPageData.total;
-    const totalPages = Math.ceil(totalRecords / pageSize);
-    
-    console.log(`[PubonlnScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
-    
-    startProgress(PROGRESS_SOURCE, totalPages);
-    updateProgress(PROGRESS_SOURCE, { totalCount: totalRecords });
+    const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
 
+    console.log(`[PubonlnScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
+
+    // 拿到真实的总页数/总条数后同步一次进度
+    updateProgress(PROGRESS_SOURCE, {
+      totalPages,
+      totalCount: totalRecords,
+      currentPage: 0,
+      processedCount: 0,
+      newCount: 0,
+      updateCount: 0,
+    });
+
+    // 第一页抓取成功后，再清空旧数据并写入第一页
+    await clearPubonlnDrugTable();
     await savePubonlnDrugBatch(firstPageData.drugs);
     globalTotalProcessed += firstPageData.drugs.length;
-    
+
     updateProgress(PROGRESS_SOURCE, {
       processedCount: globalTotalProcessed,
       newCount: globalNewCount,
       updateCount: 0,
       currentPage: 1,
+      totalPages,
+      totalCount: totalRecords,
     });
 
     if (totalPages <= 1) {

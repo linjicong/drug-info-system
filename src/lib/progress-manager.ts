@@ -1,6 +1,8 @@
 /**
  * 抓取进度管理模块
- * 使用内存存储进度状态，支持 SSE 推送
+ * 使用 globalThis 存储进度状态，避免 Next.js dev 热重载或路由 handler
+ * 被独立加载时 POST/GET 读写到不同模块实例导致状态不同步
+ * 支持 SSE 推送
  */
 
 export interface FetchProgress {
@@ -33,30 +35,54 @@ function createIdleProgress(): FetchProgress {
   };
 }
 
-// 按数据源维护独立进度状态
-const progressBySource: Record<ProgressSource, FetchProgress> = {
-  gz_drug: createIdleProgress(),
-  gd_pubonln: createIdleProgress(),
-};
-
-// SSE 客户端连接列表
-const clients = new Set<{
+type ProgressStore = Record<ProgressSource, FetchProgress>;
+type SseClient = {
   controller: ReadableStreamDefaultController;
   encoder: TextEncoder;
-}>();
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __fetchProgressStore__: ProgressStore | undefined;
+  // eslint-disable-next-line no-var
+  var __fetchProgressClients__: Set<SseClient> | undefined;
+}
+
+const globalStore = globalThis as typeof globalThis & {
+  __fetchProgressStore__?: ProgressStore;
+  __fetchProgressClients__?: Set<SseClient>;
+};
+
+function getStore(): ProgressStore {
+  if (!globalStore.__fetchProgressStore__) {
+    globalStore.__fetchProgressStore__ = {
+      gz_drug: createIdleProgress(),
+      gd_pubonln: createIdleProgress(),
+    };
+  }
+  return globalStore.__fetchProgressStore__;
+}
+
+function getClients(): Set<SseClient> {
+  if (!globalStore.__fetchProgressClients__) {
+    globalStore.__fetchProgressClients__ = new Set<SseClient>();
+  }
+  return globalStore.__fetchProgressClients__;
+}
 
 /**
  * 获取当前进度
  */
 export function getProgress(source: ProgressSource): FetchProgress {
-  return { ...progressBySource[source] };
+  return { ...getStore()[source] };
 }
 
 /**
  * 更新进度
  */
 export function updateProgress(source: ProgressSource, updates: Partial<FetchProgress>): void {
-  progressBySource[source] = { ...progressBySource[source], ...updates };
+  const store = getStore();
+  store[source] = { ...store[source], ...updates };
   broadcastProgress(source);
 }
 
@@ -64,7 +90,8 @@ export function updateProgress(source: ProgressSource, updates: Partial<FetchPro
  * 开始抓取
  */
 export function startProgress(source: ProgressSource, totalPages: number): void {
-  progressBySource[source] = {
+  const store = getStore();
+  store[source] = {
     status: 'running',
     currentPage: 0,
     totalPages,
@@ -83,8 +110,9 @@ export function startProgress(source: ProgressSource, totalPages: number): void 
  * 完成抓取
  */
 export function completeProgress(source: ProgressSource): void {
-  progressBySource[source].status = 'completed';
-  progressBySource[source].endTime = Date.now();
+  const store = getStore();
+  store[source].status = 'completed';
+  store[source].endTime = Date.now();
   broadcastProgress(source);
 }
 
@@ -92,9 +120,10 @@ export function completeProgress(source: ProgressSource): void {
  * 设置错误
  */
 export function setErrorProgress(source: ProgressSource, error: string): void {
-  progressBySource[source].status = 'error';
-  progressBySource[source].error = error;
-  progressBySource[source].endTime = Date.now();
+  const store = getStore();
+  store[source].status = 'error';
+  store[source].error = error;
+  store[source].endTime = Date.now();
   broadcastProgress(source);
 }
 
@@ -102,7 +131,8 @@ export function setErrorProgress(source: ProgressSource, error: string): void {
  * 重置进度
  */
 export function resetProgress(source: ProgressSource): void {
-  progressBySource[source] = createIdleProgress();
+  const store = getStore();
+  store[source] = createIdleProgress();
   broadcastProgress(source);
 }
 
@@ -110,9 +140,10 @@ export function resetProgress(source: ProgressSource): void {
  * 广播进度到所有 SSE 客户端
  */
 function broadcastProgress(source: ProgressSource): void {
-  const data = `data: ${JSON.stringify(progressBySource[source])}\n\n`;
+  const data = `data: ${JSON.stringify(getStore()[source])}\n\n`;
   const encoded = new TextEncoder().encode(data);
-  
+  const clients = getClients();
+
   for (const client of clients) {
     try {
       client.controller.enqueue(encoded);
@@ -129,12 +160,12 @@ function broadcastProgress(source: ProgressSource): void {
 export function addClient(source: ProgressSource, controller: ReadableStreamDefaultController): TextEncoder {
   const encoder = new TextEncoder();
   const client = { controller, encoder };
-  clients.add(client);
-  
+  getClients().add(client);
+
   // 立即发送当前进度
-  const data = `data: ${JSON.stringify(progressBySource[source])}\n\n`;
+  const data = `data: ${JSON.stringify(getStore()[source])}\n\n`;
   controller.enqueue(encoder.encode(data));
-  
+
   return encoder;
 }
 
@@ -142,6 +173,7 @@ export function addClient(source: ProgressSource, controller: ReadableStreamDefa
  * 移除 SSE 客户端
  */
 export function removeClient(controller: ReadableStreamDefaultController): void {
+  const clients = getClients();
   for (const client of clients) {
     if (client.controller === controller) {
       clients.delete(client);
@@ -154,5 +186,5 @@ export function removeClient(controller: ReadableStreamDefaultController): void 
  * 获取客户端数量
  */
 export function getClientCount(): number {
-  return clients.size;
+  return getClients().size;
 }

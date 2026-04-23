@@ -110,6 +110,22 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
 
   // 进度轮询定时器
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // 进度卡片自动隐藏定时器（抓取完成后延迟收起）
+  const progressHideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 跟踪客户端当前的进度状态，供 setInterval 回调里读取最新值
+  const progressStatusRef = useRef<FetchProgress['status']>(progress.status);
+
+  useEffect(() => {
+    progressStatusRef.current = progress.status;
+  }, [progress.status]);
+
+  /** 清理进度卡片自动隐藏定时器 */
+  const clearProgressHideTimer = useCallback(() => {
+    if (progressHideTimerRef.current) {
+      clearTimeout(progressHideTimerRef.current);
+      progressHideTimerRef.current = null;
+    }
+  }, []);
 
   /** 加载调度器配置 */
   const loadSchedulerConfig = useCallback(async () => {
@@ -201,6 +217,33 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     window.sessionStorage.setItem(progressStorageKey, JSON.stringify(next));
   }, [progressStorageKey]);
 
+  /** 重置进度为 idle（用于完成后自动隐藏卡片） */
+  const resetProgressToIdle = useCallback(() => {
+    applyProgress({
+      status: 'idle',
+      currentPage: 0,
+      totalPages: 0,
+      processedCount: 0,
+      totalCount: 0,
+      newCount: 0,
+      updateCount: 0,
+      startTime: null,
+      endTime: null,
+      error: null,
+    });
+  }, [applyProgress]);
+
+  /** 调度进度卡片在完成后自动隐藏，同步重置服务端进度 */
+  const scheduleHideProgress = useCallback((delayMs = 3000) => {
+    clearProgressHideTimer();
+    progressHideTimerRef.current = setTimeout(() => {
+      progressHideTimerRef.current = null;
+      // 重置服务端进度，避免刷新页面后再次看到已完成卡片
+      fetch(apiConfig.progressApi, { method: 'DELETE' }).catch(() => {});
+      resetProgressToIdle();
+    }, delayMs);
+  }, [apiConfig.progressApi, clearProgressHideTimer, resetProgressToIdle]);
+
   /** 开始进度轮询 */
   const startProgressPolling = useCallback(() => {
     if (progressIntervalRef.current) {
@@ -209,8 +252,16 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
 
     progressIntervalRef.current = setInterval(async () => {
       try {
-        const response = await fetch(apiConfig.progressApi);
+        const response = await fetch(`${apiConfig.progressApi}?_t=${Date.now()}`, { cache: 'no-store' });
         const data: FetchProgress = await response.json();
+
+        // 服务端启动有延迟：canStartScrape/setRunningStatus/createScrapeLog 等异步步骤
+        // 期间服务端仍是 idle，但客户端点击后已设为 running，此时忽略 idle 避免卡片闪烁
+        if (data.status === 'idle' && progressStatusRef.current === 'running') {
+          loadSchedulerConfig();
+          return;
+        }
+
         applyProgress(data);
 
         // 同时刷新调度器配置以更新运行状态
@@ -222,17 +273,21 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
           });
           stopProgressPolling();
           loadDrugs();
+          // 完成后延迟 3 秒自动隐藏进度卡片
+          scheduleHideProgress(3000);
         }
 
         if (data.status === 'error' && data.error) {
           toast.error('抓取失败', { description: data.error });
           stopProgressPolling();
+          // 错误状态下给用户一点时间查看错误信息后再隐藏
+          scheduleHideProgress(6000);
         }
       } catch (e) {
         console.error('获取进度失败:', e);
       }
     }, 1000);
-  }, [apiConfig.progressApi, applyProgress, loadDrugs, loadSchedulerConfig, stopProgressPolling]);
+  }, [apiConfig.progressApi, applyProgress, loadDrugs, loadSchedulerConfig, stopProgressPolling, scheduleHideProgress]);
 
   /** 加载当前进度（用于刷新页面后恢复状态） */
   const loadProgress = useCallback(async () => {
@@ -243,7 +298,7 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
     }
 
     try {
-      const response = await fetch(apiConfig.progressApi);
+      const response = await fetch(`${apiConfig.progressApi}?_t=${Date.now()}`, { cache: 'no-store' });
       const data: FetchProgress = await response.json();
       // 如果接口暂时回 idle，但本地存在 running 快照，则先保留运行态卡片
       if (data.status === 'idle' && cached?.status === 'running') {
@@ -255,14 +310,38 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
       if (data.status === 'running') {
         startProgressPolling();
       }
+      // 刷新页面时若服务端是已完成/出错的残留状态，稍后自动隐藏
+      if (data.status === 'completed') {
+        scheduleHideProgress(3000);
+      } else if (data.status === 'error') {
+        scheduleHideProgress(6000);
+      }
     } catch (e) {
       console.error('加载当前进度失败:', e);
     }
-  }, [apiConfig.progressApi, applyProgress, progressStorageKey, startProgressPolling]);
+  }, [apiConfig.progressApi, applyProgress, progressStorageKey, startProgressPolling, scheduleHideProgress]);
 
   /** 手动抓取 */
   const handleFetch = async () => {
     try {
+      // 新一轮抓取开始，清理上一次完成后的自动隐藏定时器
+      clearProgressHideTimer();
+
+      // 立即以占位 running 状态呈现进度卡片，避免服务端启动延迟导致卡片不出现
+      // 同时写入 sessionStorage，刷新页面也能保留进度态
+      applyProgress({
+        status: 'running',
+        currentPage: 0,
+        totalPages: 0,
+        processedCount: 0,
+        totalCount: 0,
+        newCount: 0,
+        updateCount: 0,
+        startTime: Date.now(),
+        endTime: null,
+        error: null,
+      });
+
       startProgressPolling();
 
       const response = await fetch(apiConfig.fetchApi, {
@@ -275,10 +354,13 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
       if (!result.success) {
         toast.error('抓取失败', { description: result.message });
         stopProgressPolling();
+        // 请求被拒绝（例如 409 正在运行）或失败，回滚客户端 running 占位态
+        resetProgressToIdle();
       }
     } catch {
       toast.error('抓取失败', { description: '网络错误，请重试' });
       stopProgressPolling();
+      resetProgressToIdle();
     }
   };
 
@@ -410,8 +492,9 @@ const handleFilterChange = (key: string, value: string) => {
   useEffect(() => {
     return () => {
       stopProgressPolling();
+      clearProgressHideTimer();
     };
-  }, [stopProgressPolling]);
+  }, [stopProgressPolling, clearProgressHideTimer]);
 
   return {
     // 数据

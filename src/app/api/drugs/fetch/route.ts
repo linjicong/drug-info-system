@@ -5,6 +5,7 @@ import {
   setRunningStatus,
   createScrapeLog,
   updateScrapeLog,
+  finalizeScrapeRun,
 } from '@/lib/unified-scheduler';
 
 const SOURCE = 'gz_drug' as const;
@@ -52,10 +53,13 @@ export async function POST(request: NextRequest) {
           error_message: result.error,
         });
       }
-      
+
+      // 同步更新 config 表的 last_run_at / last_run_status / next_run_at
+      await finalizeScrapeRun(SOURCE, result.success ? 'success' : 'failed');
+
       // 重置运行状态
       await setRunningStatus(SOURCE, 'idle');
-      
+
       if (result.success) {
         return NextResponse.json({
           success: true,
@@ -81,10 +85,13 @@ export async function POST(request: NextRequest) {
           error_message: error instanceof Error ? error.message : '未知错误',
         });
       }
-      
+
+      // 同步更新 config 表的失败状态
+      await finalizeScrapeRun(SOURCE, 'failed');
+
       // 重置运行状态
       await setRunningStatus(SOURCE, 'idle');
-      
+
       throw error;
     }
   } catch (error) {

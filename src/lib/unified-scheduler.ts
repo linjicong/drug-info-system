@@ -188,6 +188,39 @@ export async function setRunningStatus(
 }
 
 /**
+ * 抓取任务结束时统一更新 config 表的"上次执行时间/状态/下次执行时间"
+ * 手动触发和定时任务都调用它，确保前端 scheduler 接口里的 lastRunAt/nextRunAt 与
+ * scrape_log 最新一条始终一致，不会停留在前一次定时任务的时间。
+ */
+export async function finalizeScrapeRun(
+  source: DataSource,
+  status: 'success' | 'failed'
+): Promise<void> {
+  const config = await getUnifiedSchedulerConfig(source);
+  if (!config) return;
+
+  const nowIso = new Date().toISOString();
+  const updateData: Record<string, unknown> = {
+    last_run_at: nowIso,
+    last_run_status: status,
+    updated_at: nowIso,
+  };
+
+  // 启用状态下顺便推进 next_run_at，避免外部 Cron 触发时间一直停留在过去的时刻
+  if (config.enabled) {
+    updateData.next_run_at = new Date(
+      Date.now() + config.interval_minutes * 60 * 1000
+    ).toISOString();
+  }
+
+  const supabase = getSupabaseClient();
+  await supabase
+    .from(CONFIG_TABLE)
+    .update(updateData)
+    .eq('id', config.id);
+}
+
+/**
  * 创建抓取日志
  */
 export async function createScrapeLog(
@@ -369,20 +402,7 @@ export async function executeScrapeTask(source: DataSource): Promise<void> {
     }
 
     // 更新配置表中的最后执行状态和下次执行时间
-    const config = await getUnifiedSchedulerConfig(source);
-    if (config) {
-      const nextRunAt = new Date(Date.now() + config.interval_minutes * 60 * 1000);
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
-          last_run_status: result.success ? 'success' : 'failed',
-          next_run_at: nextRunAt.toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', config.id);
-    }
+    await finalizeScrapeRun(source, result.success ? 'success' : 'failed');
 
     console.log(`[UnifiedScheduler] 定时抓取完成 (${source}): ${result.message}`);
   } catch (error) {
@@ -397,18 +417,7 @@ export async function executeScrapeTask(source: DataSource): Promise<void> {
     }
 
     // 更新配置表中的失败状态
-    const config = await getUnifiedSchedulerConfig(source);
-    if (config) {
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
-          last_run_status: 'failed',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', config.id);
-    }
+    await finalizeScrapeRun(source, 'failed');
   } finally {
     // 重置运行状态
     await setRunningStatus(source, 'idle');

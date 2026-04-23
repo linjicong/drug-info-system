@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getMergeProgress } from '@/lib/merged-progress-manager';
+import { getMergeProgress, resetMergeProgress } from '@/lib/merged-progress-manager';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -17,6 +17,14 @@ export async function GET() {
       Expires: '0',
     },
   });
+}
+
+/**
+ * DELETE - 重置合并进度（合并完成后前端延时调用以收起进度卡片）
+ */
+export async function DELETE() {
+  resetMergeProgress();
+  return NextResponse.json({ success: true });
 }
 
 /**
