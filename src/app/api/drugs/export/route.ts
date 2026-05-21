@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       '费率(fsRate)': item.fs_rate || '',
       '药品挂网类别(sourceType)': item.source_type || '',
       '采购方式(purchaseType)': item.purchase_type || '',
-      '甲乙类(medicareType)': item.medicare_type === 0 ? '非医保' : item.medicare_type === 1 ? '甲类' : item.medicare_type === 2 ? '乙类' : item.medicare_type || '',
+      '甲乙类(medicareType)': item.medicare_type === 0 ? '甲类' : item.medicare_type === 1 ? '乙类' : item.medicare_type === 2 ? '非医保' : item.medicare_type || '',
       '医保编码(nationalDrugCode)': item.national_drug_code || '',
       '商品ID(goodsId)': item.goods_id || '',
       '采购目录ID(procurecatalogId)': item.procurecatalog_id || '',

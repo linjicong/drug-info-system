@@ -495,9 +495,13 @@ export async function executeLedgerSnapshot() {
     return { success: true, message: '没有需要监控的药品配置' };
   }
 
-  // 获取今天的格式化日期字符串
-  const today = new Date();
-  const statDate = today.toISOString().split('T')[0];
+  // 统计日期按 Asia/Shanghai 自然日计算，避免 UTC 跨日导致“前一天”
+  const statDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
   
   // 3. 开始映射：为每个追踪药品，去 merged_drug_info 获取最新数据
   // 注意：真实场景中可能合并表数据量达几万，如果要准确匹配，

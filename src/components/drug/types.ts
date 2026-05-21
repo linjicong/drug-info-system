@@ -83,7 +83,7 @@ export interface DrugInfo {
   national_drug_code?: string;
   /** 采购方式 */
   purchase_type?: number;
-  /** 甲乙类（0-非医保，1-甲类，2-乙类） */
+  /** 甲乙类（0-甲类，1-乙类，2-非医保） */
   medicare_type?: number;
   /** 药品挂网类别 */
   source_type?: string;

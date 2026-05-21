@@ -68,7 +68,7 @@ function normalize(value?: string | number | null): string {
  */
 function formatMedicareType(type?: number): string | undefined {
   if (type === undefined || type === null) return undefined;
-  const map: Record<number, string> = { 0: '非医保', 1: '甲类', 2: '乙类' };
+  const map: Record<number, string> = { 0: '甲类', 1: '乙类', 2: '非医保' };
   return map[type] ?? String(type);
 }
 

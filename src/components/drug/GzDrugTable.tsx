@@ -133,7 +133,7 @@ export function GzDrugTable({
                                 </div>
                                 <div>
                                   <span className="text-gray-500">甲乙类</span>
-                                  <p>{drug.medicare_type === 0 ? '非医保' : drug.medicare_type === 1 ? '甲类' : drug.medicare_type === 2 ? '乙类' : drug.medicare_type ?? '-'}</p>
+                                  <p>{drug.medicare_type === 0 ? '甲类' : drug.medicare_type === 1 ? '乙类' : drug.medicare_type === 2 ? '非医保' : drug.medicare_type ?? '-'}</p>
                                 </div>
                                 <div>
                                   <span className="text-gray-500">材料名称</span>

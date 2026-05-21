@@ -304,7 +304,7 @@ export const drugInfo = pgTable(
     // 采购方式（1-集中采购，2-其他）
     purchase_type: integer("purchase_type"),
     
-    // 甲乙类（0-非医保，1-甲类，2-乙类）
+    // 甲乙类（0-甲类，1-乙类，2-非医保）
     medicare_type: integer("medicare_type"),
     
     // 药品挂网类别（如：非集采、省采中选等）
