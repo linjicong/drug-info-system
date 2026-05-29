@@ -6,6 +6,16 @@ function normalizeQueryText(value?: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+const CONDITION_CHUNK_SIZE = 60;
+
 export interface UserTrackedDrug {
   id?: string;
   product_name: string;
@@ -114,25 +124,29 @@ export async function getTrackedDrugs(options?: {
   };
 
   if (productNames.length > 0) {
-    const { data: byNameRows, error: byNameErr } = await client
-      .from('merged_drug_info')
-      .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
-      .in('product_name', productNames);
-    if (byNameErr) {
-      throw new Error(`查询匹配状态失败(名称): ${byNameErr.message}`);
+    for (const chunk of chunkArray(productNames, CONDITION_CHUNK_SIZE)) {
+      const { data: byNameRows, error: byNameErr } = await client
+        .from('merged_drug_info')
+        .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
+        .in('product_name', chunk);
+      if (byNameErr) {
+        throw new Error(`查询匹配状态失败(名称): ${byNameErr.message}`);
+      }
+      upsertMergedRows(byNameRows as any[]);
     }
-    upsertMergedRows(byNameRows as any[]);
   }
 
   if (drugCodes.length > 0) {
-    const { data: byCodeRows, error: byCodeErr } = await client
-      .from('merged_drug_info')
-      .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
-      .in('national_drug_code', drugCodes);
-    if (byCodeErr) {
-      throw new Error(`查询匹配状态失败(编码): ${byCodeErr.message}`);
+    for (const chunk of chunkArray(drugCodes, CONDITION_CHUNK_SIZE)) {
+      const { data: byCodeRows, error: byCodeErr } = await client
+        .from('merged_drug_info')
+        .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
+        .in('national_drug_code', chunk);
+      if (byCodeErr) {
+        throw new Error(`查询匹配状态失败(编码): ${byCodeErr.message}`);
+      }
+      upsertMergedRows(byCodeRows as any[]);
     }
-    upsertMergedRows(byCodeRows as any[]);
   }
 
   const mergedCandidates = Array.from(mergedMap.values());
@@ -521,21 +535,12 @@ export async function executeLedgerSnapshot() {
     return { success: true, message: '没有有效的查询条件' };
   }
 
-  const chunkArray = <T,>(items: T[], chunkSize: number): T[][] => {
-    const chunks: T[][] = [];
-    for (let i = 0; i < items.length; i += chunkSize) {
-      chunks.push(items.slice(i, i + chunkSize));
-    }
-    return chunks;
-  };
-
   // 避免 URI 过长：按字段分块查询并在内存去重
   const mergedRecordMap = new Map<string, any>();
-  const conditionChunkSize = 60;
   const queryBatchSize = 1000;
   const valueChunks = [
-    { field: 'product_name', chunks: chunkArray(productNames, conditionChunkSize) },
-    { field: 'national_drug_code', chunks: chunkArray(nationalDrugCodes, conditionChunkSize) },
+    { field: 'product_name', chunks: chunkArray(productNames, CONDITION_CHUNK_SIZE) },
+    { field: 'national_drug_code', chunks: chunkArray(nationalDrugCodes, CONDITION_CHUNK_SIZE) },
   ] as const;
 
   for (const { field, chunks } of valueChunks) {
