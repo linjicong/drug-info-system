@@ -1,5 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getPubonlnDrugList } from '@/lib/pubonln-scraper';
+import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
+import { jsonError, pagedResponse } from '@/lib/api/responses';
 
 /**
  * GET /api/pubonln/drugs - 获取挂网药品列表
@@ -7,45 +9,14 @@ import { getPubonlnDrugList } from '@/lib/pubonln-scraper';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
+    const { page, pageSize } = parsePaginationParams(searchParams);
+    const filters = parseDrugFilterParams(searchParams);
 
-    const page = parseInt(searchParams.get('page') || '1', 10);
-    const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
-    const searchKeyword = searchParams.get('search') || undefined;
-    const productName = searchParams.get('productName') || undefined;
-    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
-    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
-    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
-    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+    const { data, total } = await getPubonlnDrugList({ page, pageSize, ...filters });
 
-    const { data, total } = await getPubonlnDrugList({
-      page,
-      pageSize,
-      searchKeyword,
-      productName,
-      nationalDrugCode,
-      companyName,
-      minPacQuantity,
-      minMeasureUnit,
-    });
-
-    const totalPages = Math.ceil(total / pageSize);
-
-    return NextResponse.json({
-      success: true,
-      data,
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages,
-      },
-    });
+    return pagedResponse({ data, page, pageSize, total });
   } catch (error) {
     console.error('[API] 获取挂网药品列表失败:', error);
-    return NextResponse.json({
-      success: false,
-      message: '获取数据失败',
-      error: error instanceof Error ? error.message : '未知错误',
-    }, { status: 500 });
+    return jsonError('获取数据失败', 500, error);
   }
 }

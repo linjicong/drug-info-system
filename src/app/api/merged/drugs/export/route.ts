@@ -1,7 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
+import { NextRequest } from 'next/server';
 import { exportMergedDrugData } from '@/lib/merged-drug-service';
 import type { MergedDrugInfo } from '@/components/drug/types';
+import { parseDrugFilterParams } from '@/lib/api/drug-query-params';
+import { jsonError } from '@/lib/api/responses';
+import { buildExcelResponse } from '@/lib/api/excel-export';
 
 /**
  * 药品汇总表导出接口（Excel）
@@ -10,31 +12,19 @@ import type { MergedDrugInfo } from '@/components/drug/types';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const searchKeyword = searchParams.get('search') || undefined;
-    const productName = searchParams.get('productName') || undefined;
-    const companyName = searchParams.get('companyName') || undefined;
+    // merged 导出的 companyName 不接受 manufacturer 别名（保持原行为）
+    const filters = parseDrugFilterParams(searchParams, { manufacturerAlias: false });
     const source = searchParams.get('source') || undefined;
     const medicareTypeLabel = searchParams.get('medicareTypeLabel') || undefined;
-    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
-    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
-    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
 
     const allData = await exportMergedDrugData({
-      searchKeyword,
-      productName,
-      companyName,
+      ...filters,
       source,
       medicareTypeLabel,
-      nationalDrugCode,
-      minPacQuantity,
-      minMeasureUnit,
     });
 
     if (allData.length === 0) {
-      return NextResponse.json(
-        { success: false, message: '没有可导出的数据' },
-        { status: 400 }
-      );
+      return jsonError('没有可导出的数据', 400);
     }
 
     // 来源标签映射
@@ -65,11 +55,8 @@ export async function GET(request: NextRequest) {
       '数据来源': sourceMap[item.source] ?? item.source,
     }));
 
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
-
     // 设置列宽
-    worksheet['!cols'] = [
+    const colWidths = [
       { wch: 6 },   // 序号
       { wch: 30 },  // 产品名称
       { wch: 22 },  // 医保编码
@@ -89,30 +76,17 @@ export async function GET(request: NextRequest) {
       { wch: 14 },  // 数据来源
     ];
 
-    XLSX.utils.book_append_sheet(workbook, worksheet, '药品汇总表');
-
-    const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-
     const now = new Date();
     const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-    const filename = `药品汇总表-${ts}.xlsx`;
 
-    return new NextResponse(excelBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-      },
+    return buildExcelResponse({
+      rows: worksheetData,
+      sheetName: '药品汇总表',
+      colWidths,
+      filename: `药品汇总表-${ts}.xlsx`,
     });
   } catch (error) {
     console.error('[API] 药品汇总表导出错误:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        message: '导出失败',
-        error: error instanceof Error ? error.message : '未知错误',
-      },
-      { status: 500 }
-    );
+    return jsonError('导出失败', 500, error);
   }
 }

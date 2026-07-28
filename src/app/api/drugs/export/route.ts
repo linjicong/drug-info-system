@@ -1,37 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
+import { NextRequest } from 'next/server';
 import { exportDrugData } from '@/lib/drug-scraper';
+import { parseDrugFilterParams } from '@/lib/api/drug-query-params';
+import { jsonError } from '@/lib/api/responses';
+import { buildExcelResponse, exportTimestamp } from '@/lib/api/excel-export';
 
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    const searchKeyword = searchParams.get('search') || undefined;
-    const productName = searchParams.get('productName') || undefined;
-    const nationalDrugCode = searchParams.get('nationalDrugCode') || undefined;
-    const companyName = searchParams.get('companyName') || searchParams.get('manufacturer') || undefined;
-    const minPacQuantity = searchParams.get('minPacQuantity') || searchParams.get('minPackQuantity') || undefined;
-    const minMeasureUnit = searchParams.get('minMeasureUnit') || searchParams.get('minPackUnit') || undefined;
+    const filters = parseDrugFilterParams(request.nextUrl.searchParams);
 
     // 导出数据（支持筛选参数）
-    const data = await exportDrugData({
-      searchKeyword,
-      productName,
-      nationalDrugCode,
-      companyName,
-      minPacQuantity,
-      minMeasureUnit,
-    });
-    
+    const data = await exportDrugData(filters);
+
     if (data.length === 0) {
-      return NextResponse.json({
-        success: false,
-        message: '没有可导出的数据',
-      }, { status: 400 });
+      return jsonError('没有可导出的数据', 400);
     }
-    
-    // 创建工作簿
-    const workbook = XLSX.utils.book_new();
-    
+
     // 转换数据为工作表格式 - 完整字段（与API返回一致，共25个API字段）
     const worksheetData = data.map((item, index) => ({
       '序号': index + 1,
@@ -65,10 +48,8 @@ export async function GET(request: NextRequest) {
       '更新时间': item.updated_at || '',
     }));
     
-    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
-    
     // 设置列宽
-    worksheet['!cols'] = [
+    const colWidths = [
       { wch: 6 },   // 序号
       { wch: 30 },  // 产品名称
       { wch: 15 },  // 商品名
@@ -99,37 +80,16 @@ export async function GET(request: NextRequest) {
       { wch: 20 },  // 创建时间
       { wch: 20 },  // 更新时间
     ];
-    
-    // 添加工作表到工作簿
-    XLSX.utils.book_append_sheet(workbook, worksheet, '药品信息');
-    
-    // 生成 Excel 文件
-    const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-    
+
     // 文件名格式：广州药品采购平台-YYMMDD-HHMMSS.xlsx
-    const now = new Date();
-    const year = String(now.getFullYear()).slice(2); // 两位年份
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hour = String(now.getHours()).padStart(2, '0');
-    const minute = String(now.getMinutes()).padStart(2, '0');
-    const second = String(now.getSeconds()).padStart(2, '0');
-    const timestamp = `${year}${month}${day}-${hour}${minute}${second}`;
-    const filename = `广州药品采购平台-${timestamp}.xlsx`;
-    
-    return new NextResponse(excelBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-      },
+    return buildExcelResponse({
+      rows: worksheetData,
+      sheetName: '药品信息',
+      colWidths,
+      filename: `广州药品采购平台-${exportTimestamp()}.xlsx`,
     });
   } catch (error) {
     console.error('[API] 导出错误:', error);
-    return NextResponse.json({
-      success: false,
-      message: '导出失败',
-      error: error instanceof Error ? error.message : '未知错误',
-    }, { status: 500 });
+    return jsonError('导出失败', 500, error);
   }
 }

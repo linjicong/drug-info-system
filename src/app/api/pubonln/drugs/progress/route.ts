@@ -1,24 +1,14 @@
-import { NextResponse } from 'next/server';
 import { getProgress, resetProgress } from '@/lib/progress-manager';
+import { createProgressHandlers } from '@/lib/api/route-factories';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export async function GET() {
-  const progress = getProgress('gd_pubonln');
-  return NextResponse.json(progress, {
-    headers: {
-      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-      Pragma: 'no-cache',
-      Expires: '0',
-    },
-  });
-}
-
 /**
- * DELETE - 重置抓取进度（抓取完成后前端延时调用以收起进度卡片）
+ * GET /api/pubonln/drugs/progress - 获取抓取进度（轮询方式）
+ * DELETE /api/pubonln/drugs/progress - 重置抓取进度（抓取完成后前端延时调用以收起进度卡片）
  */
-export async function DELETE() {
-  resetProgress('gd_pubonln');
-  return NextResponse.json({ success: true });
-}
+export const { GET, DELETE } = createProgressHandlers({
+  getFn: () => getProgress('gd_pubonln'),
+  resetFn: () => resetProgress('gd_pubonln'),
+});
