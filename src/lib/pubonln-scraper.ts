@@ -11,12 +11,10 @@ import { getPubonlnApiConfig, buildRequestOptions } from './api-config';
 import { httpsPost } from './shared/http';
 import { parseNumber, parseInteger } from './shared/parse';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
-import { promisePool } from './concurrent-pool';
+import { runScrape } from './shared/scrape-orchestrator';
 import {
   updateProgress,
   startProgress,
-  completeProgress,
-  setErrorProgress,
   resetProgress,
 } from './progress-manager';
 
@@ -235,117 +233,86 @@ async function clearPubonlnDrugTable(): Promise<void> {
  * 抓取广东医保服务平台挂网药品信息
  */
 export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
-  try {
-    globalNewCount = 0;
-    globalTotalProcessed = 0;
-    resetProgress(PROGRESS_SOURCE);
+  const pageSize = 500;
 
-    console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
+  let firstPageData!: { drugs: PubonlnDrugInfo[]; total: number };
 
-    const pageSize = 500;
-    const pageConcurrency = 5;
+  return runScrape<PubonlnScrapeResult>({
+    logPrefix: '[PubonlnScraper]',
+    source: PROGRESS_SOURCE,
+    pageConcurrency: 5,
+    init() {
+      globalNewCount = 0;
+      globalTotalProcessed = 0;
+      resetProgress(PROGRESS_SOURCE);
 
-    // 先初始化进度（临时总页数=1），让前端在首页抓取期间即可看到进度卡片
-    startProgress(PROGRESS_SOURCE, 1);
+      console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
 
-    // 先尝试抓取第一页数据，验证接口可用并拿到总数
-    // 若源站异常则不会把旧数据清空
-    const firstPageData = await fetchPubonlnDrugPage(1, pageSize);
-    const totalRecords = firstPageData.total;
-    const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+      // 先初始化进度（临时总页数=1），让前端在首页抓取期间即可看到进度卡片
+      startProgress(PROGRESS_SOURCE, 1);
+    },
+    async fetchFirstPage() {
+      // 先尝试抓取第一页数据，验证接口可用并拿到总数
+      // 若源站异常则不会把旧数据清空
+      firstPageData = await fetchPubonlnDrugPage(1, pageSize);
+      const totalRecords = firstPageData.total;
+      const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+      return { totalRecords, totalPages };
+    },
+    async persistFirstPage(totalRecords, totalPages) {
+      // 拿到真实的总页数/总条数后同步一次进度
+      updateProgress(PROGRESS_SOURCE, {
+        totalPages,
+        totalCount: totalRecords,
+        currentPage: 0,
+        processedCount: 0,
+        newCount: 0,
+        updateCount: 0,
+      });
 
-    console.log(`[PubonlnScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
+      // 第一页抓取成功后，再清空旧数据并写入第一页
+      await clearPubonlnDrugTable();
+      await savePubonlnDrugBatch(firstPageData.drugs);
+      globalTotalProcessed += firstPageData.drugs.length;
 
-    // 拿到真实的总页数/总条数后同步一次进度
-    updateProgress(PROGRESS_SOURCE, {
-      totalPages,
-      totalCount: totalRecords,
-      currentPage: 0,
-      processedCount: 0,
-      newCount: 0,
-      updateCount: 0,
-    });
+      updateProgress(PROGRESS_SOURCE, {
+        processedCount: globalTotalProcessed,
+        newCount: globalNewCount,
+        updateCount: 0,
+        currentPage: 1,
+        totalPages,
+        totalCount: totalRecords,
+      });
+    },
+    async processPage(page, _totalPages, totalRecords) {
+      const pageData = await fetchPubonlnDrugPage(page, pageSize);
 
-    // 第一页抓取成功后，再清空旧数据并写入第一页
-    await clearPubonlnDrugTable();
-    await savePubonlnDrugBatch(firstPageData.drugs);
-    globalTotalProcessed += firstPageData.drugs.length;
+      if (pageData.drugs.length > 0) {
+        await savePubonlnDrugBatch(pageData.drugs);
+        globalTotalProcessed += pageData.drugs.length;
 
-    updateProgress(PROGRESS_SOURCE, {
-      processedCount: globalTotalProcessed,
-      newCount: globalNewCount,
-      updateCount: 0,
-      currentPage: 1,
-      totalPages,
-      totalCount: totalRecords,
-    });
+        updateProgress(PROGRESS_SOURCE, {
+          processedCount: globalTotalProcessed,
+          newCount: globalNewCount,
+          updateCount: 0,
+          currentPage: page,
+        });
 
-    if (totalPages <= 1) {
+        console.log(`[PubonlnScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords}`);
+      }
+    },
+    logCompletion() {
       console.log(`[PubonlnScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条`);
-      completeProgress(PROGRESS_SOURCE);
+    },
+    buildSuccess() {
       return {
         success: true,
         message: `抓取完成，共处理 ${globalTotalProcessed} 条数据`,
         total: globalTotalProcessed,
         newCount: globalNewCount,
       };
-    }
-
-    const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-
-    console.log(`[PubonlnScraper] 开始并发抓取剩余 ${remainingPages.length} 页，并发数: ${pageConcurrency}`);
-
-    await promisePool(
-      remainingPages,
-      pageConcurrency,
-      async (page) => {
-        try {
-          const pageData = await fetchPubonlnDrugPage(page, pageSize);
-
-          if (pageData.drugs.length > 0) {
-            await savePubonlnDrugBatch(pageData.drugs);
-            globalTotalProcessed += pageData.drugs.length;
-
-            updateProgress(PROGRESS_SOURCE, {
-              processedCount: globalTotalProcessed,
-              newCount: globalNewCount,
-              updateCount: 0,
-              currentPage: page,
-            });
-
-            console.log(`[PubonlnScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords}`);
-          }
-        } catch (error) {
-          console.error(`[PubonlnScraper] 第 ${page} 页抓取失败:`, error);
-        }
-      },
-      (completed, total) => {
-        console.log(`[PubonlnScraper] 页面进度: ${completed}/${total}`);
-      }
-    );
-
-    console.log(`[PubonlnScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条`);
-
-    completeProgress(PROGRESS_SOURCE);
-
-    return {
-      success: true,
-      message: `抓取完成，共处理 ${globalTotalProcessed} 条数据`,
-      total: globalTotalProcessed,
-      newCount: globalNewCount,
-    };
-  } catch (error) {
-    console.error('[PubonlnScraper] 抓取错误:', error);
-    const errorMsg = error instanceof Error ? error.message : '未知错误';
-
-    setErrorProgress(PROGRESS_SOURCE, errorMsg);
-
-    return {
-      success: false,
-      message: `抓取失败: ${errorMsg}`,
-      error: errorMsg,
-    };
-  }
+    },
+  });
 }
 
 /**

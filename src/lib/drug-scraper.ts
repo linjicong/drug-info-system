@@ -6,9 +6,9 @@ import { getDrugApiConfig, buildRequestOptions } from './api-config';
 import { httpsPost } from './shared/http';
 import { parseNumber } from './shared/parse';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
-import { updateProgress, startProgress, completeProgress, setErrorProgress, resetProgress } from './progress-manager';
+import { runScrape } from './shared/scrape-orchestrator';
+import { updateProgress, startProgress, resetProgress } from './progress-manager';
 import { batchFetchWithConcurrency } from './drug-detail-worker';
-import { promisePool } from './concurrent-pool';
 
 const PROGRESS_SOURCE = 'gz_drug' as const;
 
@@ -233,82 +233,148 @@ export async function scrapeDrugInfo(
   _targetUrl?: string,
   _customHeaders?: Record<string, string>
 ): Promise<ScrapeResult> {
-  try {
-    // 重置计数器
-    globalNewCount = 0;
-    globalUpdateCount = 0;
-    globalTotalProcessed = 0;
+  const pageSize = 1000;
+  const maxPages = 50;
 
-    console.log('[DrugScraper] 开始抓取药品信息...');
+  let firstPageData!: { drugs: DrugInfo[]; total: number };
 
-    const pageSize = 1000;
-    const maxPages = 50;
-    const pageConcurrency = 3; // 并发抓取3页（避免服务器压力过大）
+  return runScrape<ScrapeResult>({
+    logPrefix: '[DrugScraper]',
+    source: PROGRESS_SOURCE,
+    pageConcurrency: 3, // 并发抓取3页（避免服务器压力过大）
+    init() {
+      // 重置计数器
+      globalNewCount = 0;
+      globalUpdateCount = 0;
+      globalTotalProcessed = 0;
 
-    // 初始化进度（先展示进度卡片，让前端立即有反馈）
-    startProgress(PROGRESS_SOURCE, maxPages);
+      console.log('[DrugScraper] 开始抓取药品信息...');
 
-    // 先尝试抓取第一页数据，验证接口可用且确定总数
-    // 这样在源站不可用时，不会把旧数据清空
-    console.log('[DrugScraper] 正在获取第一页数据...');
-    const firstPageData = await fetchDrugPage(1, pageSize);
-    const totalRecords = firstPageData.total || 0;
-    const totalPages = Math.min(Math.ceil(totalRecords / pageSize), maxPages);
+      // 初始化进度（先展示进度卡片，让前端立即有反馈）
+      startProgress(PROGRESS_SOURCE, maxPages);
+    },
+    async fetchFirstPage() {
+      // 先尝试抓取第一页数据，验证接口可用且确定总数
+      // 这样在源站不可用时，不会把旧数据清空
+      console.log('[DrugScraper] 正在获取第一页数据...');
+      firstPageData = await fetchDrugPage(1, pageSize);
+      const totalRecords = firstPageData.total || 0;
+      const totalPages = Math.min(Math.ceil(totalRecords / pageSize), maxPages);
+      return { totalRecords, totalPages };
+    },
+    async persistFirstPage(totalRecords, totalPages) {
+      // 同步一次"首页抓取完成，正在获取详情"的进度，避免卡片一直停留在 0/50
+      updateProgress(PROGRESS_SOURCE, {
+        currentPage: 1,
+        totalPages: totalPages,
+        totalCount: totalRecords,
+        processedCount: 0,
+        newCount: 0,
+        updateCount: 0,
+      });
 
-    console.log(`[DrugScraper] 总记录数: ${totalRecords}, 总页数: ${totalPages}`);
-
-    // 同步一次"首页抓取完成，正在获取详情"的进度，避免卡片一直停留在 0/50
-    updateProgress(PROGRESS_SOURCE, {
-      currentPage: 1,
-      totalPages: totalPages,
-      totalCount: totalRecords,
-      processedCount: 0,
-      newCount: 0,
-      updateCount: 0,
-    });
-
-    // 获取第一页药品的详情时间（期间按完成量增量更新进度，避免用户看到"卡在 0"）
-    // 使用全局 globalTotalProcessed 作为原子计数器，后续并发抓取共享递增，保持单调递增
-    console.log(`[DrugScraper] 正在获取第 1 页药品的详情时间...`);
-    const firstDetailTimes = await batchFetchDrugDetailTimes(
-      firstPageData.drugs,
-      () => {
-        globalTotalProcessed += 1;
-        if (globalTotalProcessed % 20 === 0) {
-          updateProgress(PROGRESS_SOURCE, {
-            processedCount: globalTotalProcessed,
-          });
+      // 获取第一页药品的详情时间（期间按完成量增量更新进度，避免用户看到"卡在 0"）
+      // 使用全局 globalTotalProcessed 作为原子计数器，后续并发抓取共享递增，保持单调递增
+      console.log(`[DrugScraper] 正在获取第 1 页药品的详情时间...`);
+      const firstDetailTimes = await batchFetchDrugDetailTimes(
+        firstPageData.drugs,
+        () => {
+          globalTotalProcessed += 1;
+          if (globalTotalProcessed % 20 === 0) {
+            updateProgress(PROGRESS_SOURCE, {
+              processedCount: globalTotalProcessed,
+            });
+          }
         }
+      );
+      const firstDrugsWithDetails = firstPageData.drugs.map(drug => {
+        const detail = firstDetailTimes.get(drug.procurecatalog_id) || {};
+        return {
+          ...drug,
+          net_time: detail.net_time,
+          price_formation_time: detail.price_formation_time,
+        };
+      });
+
+      // 第一页抓取成功后，再清空旧数据并写入第一页
+      // 这样在源站返回异常时，旧数据不会被误删
+      await clearDrugTable();
+      await saveDrugBatchToDatabase(firstDrugsWithDetails);
+
+      // 首页详情已在 batchFetchDrugDetailTimes 回调中按条递增，这里做一次对齐性刷新
+      updateProgress(PROGRESS_SOURCE, {
+        currentPage: 1,
+        totalPages: totalPages,
+        totalCount: totalRecords,
+        processedCount: globalTotalProcessed,
+        newCount: globalNewCount,
+        updateCount: globalUpdateCount,
+      });
+    },
+    async processPage(page, totalPages, totalRecords) {
+      console.log(`[DrugScraper] 正在抓取第 ${page}/${totalPages} 页...`);
+
+      const pageData = await fetchDrugPage(page, pageSize);
+
+      if (pageData.drugs.length === 0) {
+        return;
       }
-    );
-    const firstDrugsWithDetails = firstPageData.drugs.map(drug => {
-      const detail = firstDetailTimes.get(drug.procurecatalog_id) || {};
-      return {
-        ...drug,
-        net_time: detail.net_time,
-        price_formation_time: detail.price_formation_time,
-      };
-    });
 
-    // 第一页抓取成功后，再清空旧数据并写入第一页
-    // 这样在源站返回异常时，旧数据不会被误删
-    await clearDrugTable();
-    await saveDrugBatchToDatabase(firstDrugsWithDetails);
+      // 页面数据抓取成功后先更新一次进度（让用户看到新页正在进行）
+      updateProgress(PROGRESS_SOURCE, {
+        currentPage: page,
+        totalPages,
+        totalCount: totalRecords,
+        processedCount: globalTotalProcessed,
+        newCount: globalNewCount,
+        updateCount: globalUpdateCount,
+      });
 
-    // 首页详情已在 batchFetchDrugDetailTimes 回调中按条递增，这里做一次对齐性刷新
-    updateProgress(PROGRESS_SOURCE, {
-      currentPage: 1,
-      totalPages: totalPages,
-      totalCount: totalRecords,
-      processedCount: globalTotalProcessed,
-      newCount: globalNewCount,
-      updateCount: globalUpdateCount,
-    });
+      // 获取当前页药品的挂网时间和价格形成时间
+      // 通过 onProgress 回调让 globalTotalProcessed 按条递增，前端进度平滑上升
+      // 不更新 currentPage：多页并发时 currentPage 来回跳会闪烁，统一在页面完成时更新
+      console.log(`[DrugScraper] 正在获取第 ${page} 页药品的详情时间...`);
+      const detailTimes = await batchFetchDrugDetailTimes(
+        pageData.drugs,
+        () => {
+          globalTotalProcessed += 1;
+          if (globalTotalProcessed % 20 === 0) {
+            updateProgress(PROGRESS_SOURCE, {
+              processedCount: globalTotalProcessed,
+            });
+          }
+        }
+      );
 
-    // 如果只有一页，直接返回
-    if (totalPages <= 1) {
+      // 合并详情时间到药品数据
+      const drugsWithDetails = pageData.drugs.map(drug => {
+        const detail = detailTimes.get(drug.procurecatalog_id) || {};
+        return {
+          ...drug,
+          net_time: detail.net_time,
+          price_formation_time: detail.price_formation_time,
+        };
+      });
+
+      // 保存数据
+      await saveDrugBatchToDatabase(drugsWithDetails);
+
+      console.log(`[DrugScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords} 条`);
+
+      // 更新进度
+      updateProgress(PROGRESS_SOURCE, {
+        currentPage: page,
+        totalPages: totalPages,
+        totalCount: totalRecords,
+        processedCount: globalTotalProcessed,
+        newCount: globalNewCount,
+        updateCount: globalUpdateCount,
+      });
+    },
+    logCompletion() {
       console.log(`[DrugScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`);
-      completeProgress(PROGRESS_SOURCE);
+    },
+    buildSuccess() {
       return {
         success: true,
         message: `抓取完成，共处理 ${globalTotalProcessed} 条数据，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`,
@@ -316,108 +382,8 @@ export async function scrapeDrugInfo(
         newCount: globalNewCount,
         updateCount: globalUpdateCount,
       };
-    }
-
-    // 生成剩余页面任务（从第2页开始）
-    const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-
-    console.log(`[DrugScraper] 开始并发抓取剩余 ${remainingPages.length} 页，并发数: ${pageConcurrency}`);
-
-    // 并发抓取剩余页面
-    await promisePool(
-      remainingPages,
-      pageConcurrency,
-      async (page) => {
-        try {
-          console.log(`[DrugScraper] 正在抓取第 ${page}/${totalPages} 页...`);
-
-          const pageData = await fetchDrugPage(page, pageSize);
-
-          if (pageData.drugs.length === 0) {
-            return;
-          }
-
-          // 页面数据抓取成功后先更新一次进度（让用户看到新页正在进行）
-          updateProgress(PROGRESS_SOURCE, {
-            currentPage: page,
-            totalPages,
-            totalCount: totalRecords,
-            processedCount: globalTotalProcessed,
-            newCount: globalNewCount,
-            updateCount: globalUpdateCount,
-          });
-
-          // 获取当前页药品的挂网时间和价格形成时间
-          // 通过 onProgress 回调让 globalTotalProcessed 按条递增，前端进度平滑上升
-          // 不更新 currentPage：多页并发时 currentPage 来回跳会闪烁，统一在页面完成时更新
-          console.log(`[DrugScraper] 正在获取第 ${page} 页药品的详情时间...`);
-          const detailTimes = await batchFetchDrugDetailTimes(
-            pageData.drugs,
-            () => {
-              globalTotalProcessed += 1;
-              if (globalTotalProcessed % 20 === 0) {
-                updateProgress(PROGRESS_SOURCE, {
-                  processedCount: globalTotalProcessed,
-                });
-              }
-            }
-          );
-
-          // 合并详情时间到药品数据
-          const drugsWithDetails = pageData.drugs.map(drug => {
-            const detail = detailTimes.get(drug.procurecatalog_id) || {};
-            return {
-              ...drug,
-              net_time: detail.net_time,
-              price_formation_time: detail.price_formation_time,
-            };
-          });
-
-          // 保存数据
-          await saveDrugBatchToDatabase(drugsWithDetails);
-
-          console.log(`[DrugScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords} 条`);
-
-          // 更新进度
-          updateProgress(PROGRESS_SOURCE, {
-            currentPage: page,
-            totalPages: totalPages,
-            totalCount: totalRecords,
-            processedCount: globalTotalProcessed,
-            newCount: globalNewCount,
-            updateCount: globalUpdateCount,
-          });
-        } catch (error) {
-          console.error(`[DrugScraper] 第 ${page} 页抓取失败:`, error);
-        }
-      },
-      (completed, total) => {
-        console.log(`[DrugScraper] 页面进度: ${completed}/${total}`);
-      }
-    );
-
-    console.log(`[DrugScraper] 抓取完成！共处理 ${globalTotalProcessed} 条，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`);
-
-    // 完成进度
-    completeProgress(PROGRESS_SOURCE);
-
-    return {
-      success: true,
-      message: `抓取完成，共处理 ${globalTotalProcessed} 条数据，新增 ${globalNewCount} 条，更新 ${globalUpdateCount} 条`,
-      total: globalTotalProcessed,
-      newCount: globalNewCount,
-      updateCount: globalUpdateCount,
-    };
-  } catch (error) {
-    console.error('[DrugScraper] 抓取错误:', error);
-    const errorMsg = error instanceof Error ? error.message : '未知错误';
-    setErrorProgress(PROGRESS_SOURCE, errorMsg);
-    return {
-      success: false,
-      message: `抓取失败: ${errorMsg}`,
-      error: errorMsg,
-    };
-  }
+    },
+  });
 }
 
 /**
