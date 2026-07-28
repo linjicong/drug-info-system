@@ -1,4 +1,6 @@
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import { userTrackedDrugs, drugDailyLedgers, mergedDrugInfo } from '@/storage/database/shared/schema';
+import { and, asc, count, desc, eq, gte, inArray, like, lte, or, type SQL } from 'drizzle-orm';
 
 function normalizeQueryText(value?: string): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -50,6 +52,17 @@ export interface DrugDailyLedger {
 }
 
 /**
+ * 规整台账返回行：decimal 字段转 number（drizzle decimal 返回 string，原 Supabase numeric 返回 number）
+ */
+export function normalizeLedgerRow(row: Record<string, unknown>): DrugDailyLedger {
+  return {
+    ...row,
+    gpo_price: row.gpo_price != null ? Number(row.gpo_price) : undefined,
+    provincial_price: row.provincial_price != null ? Number(row.provincial_price) : undefined,
+  } as DrugDailyLedger;
+}
+
+/**
  * 分页查询监控药品列表
  * 支持按产品名称、生产企业、医保编码分别筛选
  */
@@ -71,34 +84,36 @@ export async function getTrackedDrugs(options?: {
   const nationalDrugCode = normalizeQueryText(options?.nationalDrugCode);
   const onlyUnmatched = options?.onlyUnmatched === true;
 
-  const client = getSupabaseClient();
-  let query = client
-    .from('user_tracked_drugs')
-    .select('*')
-    .order('created_at', { ascending: false });
+  const conditions: SQL[] = [];
 
   // 通用关键词搜索（产品名称或生产企业）
   if (keyword) {
-    query = query.or(`product_name.ilike.%${keyword}%,company_name.ilike.%${keyword}%`);
+    conditions.push(or(
+      like(userTrackedDrugs.product_name, `%${keyword}%`),
+      like(userTrackedDrugs.company_name, `%${keyword}%`)
+    ) as SQL);
   }
 
   // 单独字段筛选
   if (productName) {
-    query = query.ilike('product_name', `%${productName}%`);
+    conditions.push(like(userTrackedDrugs.product_name, `%${productName}%`) as SQL);
   }
   if (companyName) {
-    query = query.ilike('company_name', `%${companyName}%`);
+    conditions.push(like(userTrackedDrugs.company_name, `%${companyName}%`) as SQL);
   }
   if (nationalDrugCode) {
-    query = query.ilike('national_drug_code', `%${nationalDrugCode}%`);
+    conditions.push(like(userTrackedDrugs.national_drug_code, `%${nationalDrugCode}%`) as SQL);
   }
 
-  const { data, error } = await query;
-  if (error) {
-    throw new Error(`查询监控药品失败: ${error.message}`);
-  }
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const trackedRows = (data || []) as UserTrackedDrug[];
+  const trackedRowsRaw = await db
+    .select()
+    .from(userTrackedDrugs)
+    .where(whereClause)
+    .orderBy(desc(userTrackedDrugs.created_at));
+
+  const trackedRows = trackedRowsRaw as unknown as UserTrackedDrug[];
   if (trackedRows.length === 0) {
     return {
       data: trackedRows,
@@ -123,29 +138,32 @@ export async function getTrackedDrugs(options?: {
     }
   };
 
+  const mergedSelectFields = {
+    id: mergedDrugInfo.id,
+    product_name: mergedDrugInfo.product_name,
+    national_drug_code: mergedDrugInfo.national_drug_code,
+    company_name: mergedDrugInfo.company_name,
+    min_pac_quantity: mergedDrugInfo.min_pac_quantity,
+    min_measure_unit: mergedDrugInfo.min_measure_unit,
+  };
+
   if (productNames.length > 0) {
     for (const chunk of chunkArray(productNames, CONDITION_CHUNK_SIZE)) {
-      const { data: byNameRows, error: byNameErr } = await client
-        .from('merged_drug_info')
-        .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
-        .in('product_name', chunk);
-      if (byNameErr) {
-        throw new Error(`查询匹配状态失败(名称): ${byNameErr.message}`);
-      }
-      upsertMergedRows(byNameRows as any[]);
+      const rows = await db
+        .select(mergedSelectFields)
+        .from(mergedDrugInfo)
+        .where(inArray(mergedDrugInfo.product_name, chunk));
+      upsertMergedRows(rows as any[]);
     }
   }
 
   if (drugCodes.length > 0) {
     for (const chunk of chunkArray(drugCodes, CONDITION_CHUNK_SIZE)) {
-      const { data: byCodeRows, error: byCodeErr } = await client
-        .from('merged_drug_info')
-        .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit')
-        .in('national_drug_code', chunk);
-      if (byCodeErr) {
-        throw new Error(`查询匹配状态失败(编码): ${byCodeErr.message}`);
-      }
-      upsertMergedRows(byCodeRows as any[]);
+      const rows = await db
+        .select(mergedSelectFields)
+        .from(mergedDrugInfo)
+        .where(inArray(mergedDrugInfo.national_drug_code, chunk));
+      upsertMergedRows(rows as any[]);
     }
   }
 
@@ -232,8 +250,6 @@ export async function getTrackedDrugs(options?: {
  * 批量插入监控药品
  */
 export async function insertTrackedDrugs(drugs: UserTrackedDrug[]) {
-  const client = getSupabaseClient();
-  
   // 生成记录并确保产品名称不为空
   const records = drugs.filter(d => d.product_name && d.product_name.trim().length > 0).map(d => ({
     id: d.id || (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36)),
@@ -246,11 +262,7 @@ export async function insertTrackedDrugs(drugs: UserTrackedDrug[]) {
 
   if (records.length === 0) return { success: true, count: 0 };
 
-  const { error } = await client.from('user_tracked_drugs').insert(records);
-  if (error) {
-    throw new Error(`插入监控药品失败: ${error.message}`);
-  }
-
+  await db.insert(userTrackedDrugs).values(records as never);
   return { success: true, count: records.length };
 }
 
@@ -258,8 +270,6 @@ export async function insertTrackedDrugs(drugs: UserTrackedDrug[]) {
  * 覆盖导入监控药品：先清空历史配置，再批量插入新数据
  */
 export async function replaceTrackedDrugs(drugs: UserTrackedDrug[]) {
-  const client = getSupabaseClient();
-
   // 先构建并校验记录，确保不会清空后插入 0 条导致“空覆盖”
   const records = drugs.filter(d => d.product_name && d.product_name.trim().length > 0).map(d => ({
     id: d.id || (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36)),
@@ -274,43 +284,47 @@ export async function replaceTrackedDrugs(drugs: UserTrackedDrug[]) {
     throw new Error('覆盖导入失败: 有效数据为空');
   }
 
-  const { data: existingRows, error: backupErr } = await client
-    .from('user_tracked_drugs')
-    .select('id,product_name,national_drug_code,company_name,min_pac_quantity,min_measure_unit');
-  if (backupErr) {
-    throw new Error(`覆盖导入失败: 读取历史配置失败 - ${backupErr.message}`);
-  }
+  const existingRows = await db
+    .select({
+      id: userTrackedDrugs.id,
+      product_name: userTrackedDrugs.product_name,
+      national_drug_code: userTrackedDrugs.national_drug_code,
+      company_name: userTrackedDrugs.company_name,
+      min_pac_quantity: userTrackedDrugs.min_pac_quantity,
+      min_measure_unit: userTrackedDrugs.min_measure_unit,
+    })
+    .from(userTrackedDrugs);
 
-  const { error: deleteErr } = await client
-    .from('user_tracked_drugs')
-    .delete()
-    .not('id', 'is', null);
-  if (deleteErr) {
-    throw new Error(`清空监控药品失败: ${deleteErr.message}`);
-  }
+  const backupRecords = existingRows as unknown as UserTrackedDrug[];
 
-  const backupRecords = (existingRows || []) as UserTrackedDrug[];
+  // 清空全表（等价于原 .not('id','is',null) 的清表语义）
+  await db.delete(userTrackedDrugs);
+
   const batchSize = 500;
   let inserted = 0;
   try {
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize);
-      const { error: insertErr } = await client.from('user_tracked_drugs').insert(batch);
-      if (insertErr) {
-        throw new Error(`覆盖导入插入失败: ${insertErr.message}`);
-      }
+      await db.insert(userTrackedDrugs).values(batch as never);
       inserted += batch.length;
     }
   } catch (insertError) {
     // 尝试补偿恢复，避免“先删后插失败”导致配置丢失
     if (backupRecords.length > 0) {
       for (let i = 0; i < backupRecords.length; i += batchSize) {
-        const batch = backupRecords.slice(i, i + batchSize);
-        const { error: restoreErr } = await client.from('user_tracked_drugs').insert(batch);
-        if (restoreErr) {
-          throw new Error(
-            `覆盖导入失败且回滚失败: ${insertError instanceof Error ? insertError.message : String(insertError)}；回滚错误: ${restoreErr.message}`
-          );
+        const batch = backupRecords.slice(i, i + batchSize).map(d => ({
+          id: d.id || (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36)),
+          product_name: d.product_name,
+          national_drug_code: d.national_drug_code || null,
+          company_name: d.company_name || null,
+          min_pac_quantity: d.min_pac_quantity || null,
+          min_measure_unit: d.min_measure_unit || null,
+        }));
+        try {
+          await db.insert(userTrackedDrugs).values(batch as never);
+        } catch (restoreErr) {
+          // 补偿批次失败不抛出，避免掩盖原始错误；记录日志供排查
+          console.error('[Ledger] 覆盖导入补偿恢复批次失败:', restoreErr);
         }
       }
     }
@@ -324,15 +338,10 @@ export async function replaceTrackedDrugs(drugs: UserTrackedDrug[]) {
  * 更新监控药品
  */
 export async function updateTrackedDrug(id: string, updates: Partial<UserTrackedDrug>) {
-  const client = getSupabaseClient();
-  const { error } = await client
-    .from('user_tracked_drugs')
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq('id', id);
-
-  if (error) {
-    throw new Error(`更新监控药品失败: ${error.message}`);
-  }
+  await db
+    .update(userTrackedDrugs)
+    .set({ ...updates, updated_at: new Date() } as never)
+    .where(eq(userTrackedDrugs.id, id));
   return true;
 }
 
@@ -340,15 +349,7 @@ export async function updateTrackedDrug(id: string, updates: Partial<UserTracked
  * 删除监控药品
  */
 export async function deleteTrackedDrug(id: string) {
-  const client = getSupabaseClient();
-  const { error } = await client
-    .from('user_tracked_drugs')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    throw new Error(`删除监控药品失败: ${error.message}`);
-  }
+  await db.delete(userTrackedDrugs).where(eq(userTrackedDrugs.id, id));
   return true;
 }
 
@@ -374,44 +375,50 @@ export async function getDailyLedgers(options?: {
   const companyName = normalizeQueryText(options?.companyName);
   const minPacQuantity = normalizeQueryText(options?.minPacQuantity);
   const minMeasureUnit = normalizeQueryText(options?.minMeasureUnit);
-  
-  const client = getSupabaseClient();
-  let query = client
-    .from('drug_daily_ledgers')
-    .select('*', { count: 'exact' })
-    .order('stat_date', { ascending: false })
-    .order('created_at', { ascending: false });
+
+  const conditions: SQL[] = [];
 
   if (productName) {
-    query = query.ilike('product_name', `%${productName}%`);
+    conditions.push(like(drugDailyLedgers.product_name, `%${productName}%`) as SQL);
   }
   if (nationalDrugCode) {
-    query = query.ilike('national_drug_code', `%${nationalDrugCode}%`);
+    conditions.push(like(drugDailyLedgers.national_drug_code, `%${nationalDrugCode}%`) as SQL);
   }
   if (companyName) {
-    query = query.ilike('company_name', `%${companyName}%`);
+    conditions.push(like(drugDailyLedgers.company_name, `%${companyName}%`) as SQL);
   }
   if (minPacQuantity) {
-    query = query.eq('min_pac_quantity', minPacQuantity);
+    conditions.push(eq(drugDailyLedgers.min_pac_quantity, minPacQuantity) as SQL);
   }
   if (minMeasureUnit) {
-    query = query.ilike('min_measure_unit', `%${minMeasureUnit}%`);
+    conditions.push(like(drugDailyLedgers.min_measure_unit, `%${minMeasureUnit}%`) as SQL);
   }
   if (options?.startDate) {
-    query = query.gte('stat_date', options.startDate);
+    conditions.push(gte(drugDailyLedgers.stat_date, options.startDate) as SQL);
   }
   if (options?.endDate) {
-    query = query.lte('stat_date', options.endDate);
+    conditions.push(lte(drugDailyLedgers.stat_date, options.endDate) as SQL);
   }
 
-  const { data, error, count } = await query.range(offset, offset + pageSize - 1);
-  if (error) {
-    throw new Error(`查询台账历史失败: ${error.message}`);
-  }
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const [dataRows, countRows] = await Promise.all([
+    db
+      .select()
+      .from(drugDailyLedgers)
+      .where(whereClause)
+      .orderBy(desc(drugDailyLedgers.stat_date), desc(drugDailyLedgers.created_at))
+      .offset(offset)
+      .limit(pageSize),
+    db
+      .select({ count: count() })
+      .from(drugDailyLedgers)
+      .where(whereClause),
+  ]);
 
   return {
-    data: data as DrugDailyLedger[],
-    total: count || 0,
+    data: dataRows.map(row => normalizeLedgerRow(row as unknown as Record<string, unknown>)),
+    total: Number(countRows[0]?.count ?? 0),
   };
 }
 
@@ -433,7 +440,6 @@ export async function getDailyLedgersByDates(
 ): Promise<DrugDailyLedger[]> {
   if (!dates || dates.length === 0) return [];
 
-  const client = getSupabaseClient();
   const productName = normalizeQueryText(filters?.productName);
   const nationalDrugCode = normalizeQueryText(filters?.nationalDrugCode);
   const companyName = normalizeQueryText(filters?.companyName);
@@ -441,45 +447,43 @@ export async function getDailyLedgersByDates(
   const minMeasureUnit = normalizeQueryText(filters?.minMeasureUnit);
   const allResults: DrugDailyLedger[] = [];
 
-  // Supabase 默认单次最多返回 1000 条，如果数据量大需要分页获取
   const batchSize = 1000;
   let offset = 0;
   let hasMore = true;
 
   while (hasMore) {
-    let query = client
-      .from('drug_daily_ledgers')
-      .select('*')
-      .in('stat_date', dates)
-      .order('product_name', { ascending: true })
-      .order('stat_date', { ascending: true })
-      .range(offset, offset + batchSize - 1);
+    const conditions: SQL[] = [inArray(drugDailyLedgers.stat_date, dates) as SQL];
 
     if (productName) {
-      query = query.ilike('product_name', `%${productName}%`);
+      conditions.push(like(drugDailyLedgers.product_name, `%${productName}%`) as SQL);
     }
     if (nationalDrugCode) {
-      query = query.ilike('national_drug_code', `%${nationalDrugCode}%`);
+      conditions.push(like(drugDailyLedgers.national_drug_code, `%${nationalDrugCode}%`) as SQL);
     }
     if (companyName) {
-      query = query.ilike('company_name', `%${companyName}%`);
+      conditions.push(like(drugDailyLedgers.company_name, `%${companyName}%`) as SQL);
     }
     if (minPacQuantity) {
-      query = query.eq('min_pac_quantity', minPacQuantity);
+      conditions.push(eq(drugDailyLedgers.min_pac_quantity, minPacQuantity) as SQL);
     }
     if (minMeasureUnit) {
-      query = query.ilike('min_measure_unit', `%${minMeasureUnit}%`);
+      conditions.push(like(drugDailyLedgers.min_measure_unit, `%${minMeasureUnit}%`) as SQL);
     }
 
-    const { data, error } = await query;
-    if (error) {
-      throw new Error(`批量查询台账历史失败: ${error.message}`);
-    }
+    const whereClause = and(...conditions);
 
-    if (data && data.length > 0) {
-      allResults.push(...(data as DrugDailyLedger[]));
+    const rows = await db
+      .select()
+      .from(drugDailyLedgers)
+      .where(whereClause)
+      .orderBy(asc(drugDailyLedgers.product_name), asc(drugDailyLedgers.stat_date))
+      .offset(offset)
+      .limit(batchSize);
+
+    if (rows.length > 0) {
+      allResults.push(...rows.map(row => normalizeLedgerRow(row as unknown as Record<string, unknown>)));
       offset += batchSize;
-      hasMore = data.length === batchSize; // 如果返回数量等于批次大小，可能还有更多
+      hasMore = rows.length === batchSize;
     } else {
       hasMore = false;
     }
@@ -494,17 +498,10 @@ export async function getDailyLedgersByDates(
  * 生成今天的快照写入 drug_daily_ledgers。
  */
 export async function executeLedgerSnapshot() {
-  const client = getSupabaseClient();
-  
   // 1. 获取所有用户追踪的药品配置
-  const { data: trackData, error: trackErr } = await client
-    .from('user_tracked_drugs')
-    .select('*');
-    
-  if (trackErr) {
-    throw new Error(`获取用户配置失败: ${trackErr.message}`);
-  }
-  const trackedDrugs = trackData as UserTrackedDrug[];
+  const trackedRowsRaw = await db.select().from(userTrackedDrugs);
+  const trackedDrugs = trackedRowsRaw as unknown as UserTrackedDrug[];
+
   if (!trackedDrugs || trackedDrugs.length === 0) {
     return { success: true, message: '没有需要监控的药品配置' };
   }
@@ -516,11 +513,8 @@ export async function executeLedgerSnapshot() {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
-  
+
   // 3. 开始映射：为每个追踪药品，去 merged_drug_info 获取最新数据
-  // 注意：真实场景中可能合并表数据量达几万，如果要准确匹配，
-  // 我们循环或进行批量 in 查询。这里根据产品名称和企业名称进行查寻。
-  
   const ledgersToInsert: any[] = [];
 
   // 批量查询优化：收集所有追踪药品的关键字段，一次性查询 merged_drug_info，避免 N+1 问题
@@ -538,40 +532,41 @@ export async function executeLedgerSnapshot() {
   // 避免 URI 过长：按字段分块查询并在内存去重
   const mergedRecordMap = new Map<string, any>();
   const queryBatchSize = 1000;
-  const valueChunks = [
-    { field: 'product_name', chunks: chunkArray(productNames, CONDITION_CHUNK_SIZE) },
-    { field: 'national_drug_code', chunks: chunkArray(nationalDrugCodes, CONDITION_CHUNK_SIZE) },
-  ] as const;
 
-  for (const { field, chunks } of valueChunks) {
-    for (const values of chunks) {
-      let queryOffset = 0;
-      let hasMore = true;
-      while (hasMore) {
-        const { data: batchData, error: batchErr } = await client
-          .from('merged_drug_info')
-          .select('*')
-          .in(field, values)
-          .range(queryOffset, queryOffset + queryBatchSize - 1);
+  const fetchMergedByField = async (field: 'product_name' | 'national_drug_code', values: string[]) => {
+    let queryOffset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const batchData = await db
+        .select()
+        .from(mergedDrugInfo)
+        .where(inArray(
+          field === 'product_name' ? mergedDrugInfo.product_name : mergedDrugInfo.national_drug_code,
+          values
+        ))
+        .offset(queryOffset)
+        .limit(queryBatchSize);
 
-        if (batchErr) {
-          console.warn(`[Ledger] 警告：批量查询 merged_drug_info 失败(${field}) - ${batchErr.message}`);
-          break;
+      if (batchData.length > 0) {
+        for (const row of batchData) {
+          const key = row.id ?? `${row.product_name ?? ''}|${row.national_drug_code ?? ''}|${row.company_name ?? ''}|${row.spec ?? ''}`;
+          mergedRecordMap.set(String(key), row);
         }
-
-        if (batchData && batchData.length > 0) {
-          for (const row of batchData) {
-            const key = row.id ?? `${row.product_name ?? ''}|${row.national_drug_code ?? ''}|${row.company_name ?? ''}|${row.spec ?? ''}`;
-            mergedRecordMap.set(String(key), row);
-          }
-          queryOffset += queryBatchSize;
-          hasMore = batchData.length === queryBatchSize;
-        } else {
-          hasMore = false;
-        }
+        queryOffset += queryBatchSize;
+        hasMore = batchData.length === queryBatchSize;
+      } else {
+        hasMore = false;
       }
     }
+  };
+
+  for (const values of chunkArray(productNames, CONDITION_CHUNK_SIZE)) {
+    await fetchMergedByField('product_name', values);
   }
+  for (const values of chunkArray(nationalDrugCodes, CONDITION_CHUNK_SIZE)) {
+    await fetchMergedByField('national_drug_code', values);
+  }
+
   const allMergedRecords = Array.from(mergedRecordMap.values());
 
   /**
@@ -614,29 +609,22 @@ export async function executeLedgerSnapshot() {
       console.log(`[Ledger] 未能在匹配表中找到药品数据：${track.product_name}`);
     }
   }
-  
+
   if (ledgersToInsert.length === 0) {
     return { success: true, message: '没有任何追踪药品在库中匹配到数据' };
   }
 
   // 4. 清除同一天的旧数据以防重复跑批
-  await client
-    .from('drug_daily_ledgers')
-    .delete()
-    .eq('stat_date', statDate);
+  await db.delete(drugDailyLedgers).where(eq(drugDailyLedgers.stat_date, statDate));
 
   // 5. 插入最新历史记录快照
   const batchSize = 500;
   let savedCount = 0;
   for (let i = 0; i < ledgersToInsert.length; i += batchSize) {
     const batch = ledgersToInsert.slice(i, i + batchSize);
-    const { error: insErr } = await client.from('drug_daily_ledgers').insert(batch);
-    if (insErr) {
-      throw new Error(`插入台账每日快照失败: ${insErr.message}`);
-    }
+    await db.insert(drugDailyLedgers).values(batch as never);
     savedCount += batch.length;
   }
 
   return { success: true, message: `成功快照 ${savedCount} 条药品台账(${statDate})` };
 }
-

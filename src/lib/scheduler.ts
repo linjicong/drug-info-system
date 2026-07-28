@@ -3,52 +3,35 @@
  * 负责定时抓取药品信息
  */
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import { schedulerConfig } from '@/storage/database/shared/schema';
+import { eq } from 'drizzle-orm';
 import { scrapeDrugInfo } from './drug-scraper';
 
 // 调度器状态
 let schedulerInterval: NodeJS.Timeout | null = null;
 let isInitialized = false;
 
-// 配置表名
-const CONFIG_TABLE = 'scheduler_config';
-
 /**
  * 获取当前调度器配置
  */
 export async function getSchedulerConfig() {
   try {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from(CONFIG_TABLE)
-      .select('*')
-      .limit(1)
-      .single();
-    
-    if (error && error.code === 'PGRST116') {
-      // 没有记录，创建默认配置
-      const { data: newConfig, error: insertError } = await supabase
-        .from(CONFIG_TABLE)
-        .insert({
-          enabled: false,
-          interval_minutes: 60,
-        })
-        .select()
-        .single();
-      
-      if (insertError) {
-        console.error('[Scheduler] 创建默认配置失败:', insertError);
-        return null;
-      }
-      return newConfig;
+    const rows = await db.select().from(schedulerConfig).limit(1);
+
+    if (rows.length > 0) {
+      return rows[0];
     }
-    
-    if (error) {
-      console.error('[Scheduler] 获取配置失败:', error);
-      return null;
-    }
-    
-    return data;
+
+    // 没有记录，创建默认配置
+    await db.insert(schedulerConfig).values({
+      enabled: false,
+      interval_minutes: 60,
+    });
+
+    // MySQL 不支持 RETURNING，回查新配置
+    const newRows = await db.select().from(schedulerConfig).limit(1);
+    return newRows[0] ?? null;
   } catch (error) {
     console.error('[Scheduler] 获取配置失败:', error);
     return null;
@@ -89,22 +72,22 @@ export async function updateSchedulerConfig(config: {
       updateData.next_run_at = null;
     }
 
-    const supabase = getSupabaseClient();
-    const { data: updated, error } = await supabase
-      .from(CONFIG_TABLE)
-      .update(updateData)
-      .eq('id', currentConfig.id)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    await db
+      .update(schedulerConfig)
+      .set(updateData)
+      .where(eq(schedulerConfig.id, currentConfig.id));
 
     // 重启调度器（不会立即执行抓取，只设置定时器）
     restartScheduler();
 
-    return updated;
+    // MySQL 不支持 RETURNING，回查更新后的配置
+    const updatedRows = await db
+      .select()
+      .from(schedulerConfig)
+      .where(eq(schedulerConfig.id, currentConfig.id))
+      .limit(1);
+
+    return updatedRows[0] ?? null;
   } catch (error) {
     console.error('[Scheduler] 更新配置失败:', error);
     throw error;
@@ -116,43 +99,41 @@ export async function updateSchedulerConfig(config: {
  */
 async function executeFetchTask() {
   console.log('[Scheduler] 开始执行定时抓取任务...');
-  
+
   try {
     const result = await scrapeDrugInfo();
-    
+
     // 更新最后执行状态和下次执行时间
     const config = await getSchedulerConfig();
     if (config) {
       const nextRunAt = new Date(Date.now() + config.interval_minutes * 60 * 1000);
-      
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
+
+      await db
+        .update(schedulerConfig)
+        .set({
+          last_run_at: new Date(),
           last_run_status: result.success ? 'success' : 'failed',
-          next_run_at: nextRunAt.toISOString(),
-          updated_at: new Date().toISOString(),
+          next_run_at: nextRunAt,
+          updated_at: new Date(),
         })
-        .eq('id', config.id);
+        .where(eq(schedulerConfig.id, config.id));
     }
-    
+
     console.log('[Scheduler] 定时抓取完成:', result.message);
   } catch (error) {
     console.error('[Scheduler] 定时抓取失败:', error);
-    
+
     // 更新失败状态
     const config = await getSchedulerConfig();
     if (config) {
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
+      await db
+        .update(schedulerConfig)
+        .set({
+          last_run_at: new Date(),
           last_run_status: 'error',
-          updated_at: new Date().toISOString(),
+          updated_at: new Date(),
         })
-        .eq('id', config.id);
+        .where(eq(schedulerConfig.id, config.id));
     }
   }
 }
@@ -171,9 +152,9 @@ async function startScheduler() {
   }
 
   const intervalMs = config.interval_minutes * 60 * 1000;
-  
+
   console.log(`[Scheduler] 启动定时任务，间隔: ${config.interval_minutes} 分钟，下次执行: ${config.next_run_at || '等待中'}`);
-  
+
   // 设置定时任务（第一次执行在 interval 时间后）
   schedulerInterval = setInterval(async () => {
     // 每次执行前检查配置是否仍然启用
@@ -182,7 +163,7 @@ async function startScheduler() {
       stopScheduler();
       return;
     }
-    
+
     await executeFetchTask();
   }, intervalMs);
 }
@@ -215,15 +196,15 @@ export async function initScheduler() {
   if (isInitialized) {
     return;
   }
-  
+
   console.log('[Scheduler] 初始化定时任务调度器...');
-  
+
   // 确保配置表存在
   const config = await getSchedulerConfig();
   if (config?.enabled) {
     await startScheduler();
   }
-  
+
   isInitialized = true;
   console.log('[Scheduler] 调度器初始化完成');
 }

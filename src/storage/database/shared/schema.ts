@@ -1,14 +1,14 @@
 import { sql } from "drizzle-orm"
-import { pgTable, serial, timestamp, varchar, text, numeric, jsonb, index, integer, boolean, date } from "drizzle-orm/pg-core"
+import { mysqlTable, serial, datetime, varchar, text, decimal, index, int, boolean, date } from "drizzle-orm/mysql-core"
 
 
-export const healthCheck = pgTable("health_check", {
-	id: serial().notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+export const healthCheck = mysqlTable("health_check", {
+	id: serial().primaryKey().notNull(),
+	updatedAt: datetime("updated_at", { mode: 'string' }).default(sql`CURRENT_TIMESTAMP`),
 });
 
 // 统一的调度器配置表（支持多数据源）
-export const unifiedSchedulerConfig = pgTable("unified_scheduler_config", {
+export const unifiedSchedulerConfig = mysqlTable("unified_scheduler_config", {
 	id: serial().notNull().primaryKey(),
   
   // 数据源标识：'gz_drug' 或 'gd_pubonln'
@@ -18,13 +18,13 @@ export const unifiedSchedulerConfig = pgTable("unified_scheduler_config", {
   enabled: boolean("enabled").default(false).notNull(),
   
   // 抓取间隔（分钟）
-  interval_minutes: integer("interval_minutes").default(60).notNull(),
+  interval_minutes: int("interval_minutes").default(60).notNull(),
   
   // 下次执行时间
-  next_run_at: timestamp("next_run_at", { withTimezone: true }),
+  next_run_at: datetime("next_run_at"),
   
   // 上次执行时间
-  last_run_at: timestamp("last_run_at", { withTimezone: true }),
+  last_run_at: datetime("last_run_at"),
   
   // 上次执行状态
   last_run_status: varchar("last_run_status", { length: 50 }),
@@ -33,14 +33,14 @@ export const unifiedSchedulerConfig = pgTable("unified_scheduler_config", {
   running_status: varchar("running_status", { length: 20 }).default('idle').notNull(),
   
   // 更新时间
-  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 
   // 定时任务外部调用鉴权密钥
   cron_secret: varchar("cron_secret", { length: 100 }),
 });
 
 // 抓取日志表
-export const scrapeLog = pgTable(
+export const scrapeLog = mysqlTable(
   "scrape_log",
   {
     id: serial().notNull().primaryKey(),
@@ -55,28 +55,28 @@ export const scrapeLog = pgTable(
     status: varchar("status", { length: 20 }).notNull().default('running'),
     
     // 开始时间
-    start_time: timestamp("start_time", { withTimezone: true }).notNull().defaultNow(),
+    start_time: datetime("start_time").notNull().default(sql`CURRENT_TIMESTAMP`),
     
     // 结束时间
-    end_time: timestamp("end_time", { withTimezone: true }),
+    end_time: datetime("end_time"),
     
     // 耗时（秒）
-    duration_seconds: integer("duration_seconds"),
+    duration_seconds: int("duration_seconds"),
     
     // 处理总数
-    total_count: integer("total_count").default(0),
+    total_count: int("total_count").default(0),
     
     // 新增数量
-    new_count: integer("new_count").default(0),
+    new_count: int("new_count").default(0),
     
     // 更新数量
-    update_count: integer("update_count").default(0),
+    update_count: int("update_count").default(0),
     
     // 错误信息
     error_message: text("error_message"),
     
     // 创建时间
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
   (table) => [
     index("idx_scrape_log_source").on(table.source),
@@ -85,38 +85,38 @@ export const scrapeLog = pgTable(
 );
 
 // 定时任务配置表（保留兼容）
-export const schedulerConfig = pgTable("scheduler_config", {
+export const schedulerConfig = mysqlTable("scheduler_config", {
 	id: serial().notNull().primaryKey(),
   
   // 是否启用定时抓取
   enabled: boolean("enabled").default(false).notNull(),
   
   // 抓取间隔（分钟）
-  interval_minutes: integer("interval_minutes").default(60).notNull(),
+  interval_minutes: int("interval_minutes").default(60).notNull(),
   
   // 下次执行时间
-  next_run_at: timestamp("next_run_at", { withTimezone: true }),
+  next_run_at: datetime("next_run_at"),
   
   // 上次执行时间
-  last_run_at: timestamp("last_run_at", { withTimezone: true }),
+  last_run_at: datetime("last_run_at"),
   
   // 上次执行状态
   last_run_status: varchar("last_run_status", { length: 50 }),
   
   // 更新时间
-  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
 // 挂网药品信息表 - 广东医保服务平台挂网公示
-export const pubonlnDrugInfo = pgTable(
+export const pubonlnDrugInfo = mysqlTable(
   "pubonln_drug_info",
   {
-    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
     // ============ API 返回字段 ============
     
     // 药品ID
-    drug_id: integer("drug_id"),
+    drug_id: int("drug_id"),
     
     // 全省交易状态（活跃区）
     gw_active: varchar("gw_active", { length: 50 }),
@@ -164,7 +164,7 @@ export const pubonlnDrugInfo = pgTable(
     minpac_name: varchar("minpac_name", { length: 50 }),
     
     // 挂网价格(元)（包装）
-    min_pac_pubonln_pric: numeric("min_pac_pubonln_pric", { precision: 15, scale: 4 }),
+    min_pac_pubonln_pric: decimal("min_pac_pubonln_pric", { precision: 15, scale: 4 }),
     
     // 挂网时间
     pubonln_time: varchar("pubonln_time", { length: 50 }),
@@ -221,10 +221,10 @@ export const pubonlnDrugInfo = pgTable(
     formation_mode: varchar("formation_mode", { length: 50 }),
     
     // 是否暂停挂网、已撤网
-    stop_pubonln: integer("stop_pubonln").default(0),
+    stop_pubonln: int("stop_pubonln").default(0),
     
     // 是否存在挂网价格
-    exist_pubonln_pric: integer("exist_pubonln_pric").default(0),
+    exist_pubonln_pric: int("exist_pubonln_pric").default(0),
     
     // 备注
     remark: text("remark"),
@@ -232,10 +232,10 @@ export const pubonlnDrugInfo = pgTable(
     // ============ 系统字段 ============
     
     // 创建时间
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
     
     // 更新时间
-    updated_at: timestamp("updated_at", { withTimezone: true }),
+    updated_at: datetime("updated_at"),
   },
   (table) => [
     index("idx_pubonln_drug_info_genname").on(table.genname),
@@ -246,10 +246,10 @@ export const pubonlnDrugInfo = pgTable(
 
 // 药品信息表 - 完全匹配API返回字段（共23个API字段）
 // 字段说明参考广州药品采购平台 API 返回
-export const drugInfo = pgTable(
+export const drugInfo = mysqlTable(
   "drug_info",
   {
-    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
     // ============ API 返回字段 ============
     
@@ -281,19 +281,19 @@ export const drugInfo = pgTable(
     unit_id: varchar("unit_id", { length: 50 }),
     
     // 数量（包装内最小单位数量）
-    factor: integer("factor"),
+    factor: int("factor"),
     
     // 规格包装单位数值
-    outlook_unit: numeric("outlook_unit", { precision: 15, scale: 4 }),
+    outlook_unit: decimal("outlook_unit", { precision: 15, scale: 4 }),
     
     // 包装单位参考价格(元)
-    bid_price: numeric("bid_price", { precision: 15, scale: 4 }),
+    bid_price: decimal("bid_price", { precision: 15, scale: 4 }),
     
     // 最小制剂单位参考价格(元)
-    min_unit_price: numeric("min_unit_price", { precision: 15, scale: 4 }),
+    min_unit_price: decimal("min_unit_price", { precision: 15, scale: 4 }),
     
     // 最高挂网价格(元)
-    max_listing_price: numeric("max_listing_price", { precision: 15, scale: 4 }),
+    max_listing_price: decimal("max_listing_price", { precision: 15, scale: 4 }),
     
     // 医保编码
     national_drug_code: varchar("national_drug_code", { length: 100 }),
@@ -302,10 +302,10 @@ export const drugInfo = pgTable(
     procurecatalog_id: varchar("procurecatalog_id", { length: 50 }).notNull(),
     
     // 采购方式（1-集中采购，2-其他）
-    purchase_type: integer("purchase_type"),
+    purchase_type: int("purchase_type"),
     
     // 甲乙类（0-甲类，1-乙类，2-非医保）
-    medicare_type: integer("medicare_type"),
+    medicare_type: int("medicare_type"),
     
     // 药品挂网类别（如：非集采、省采中选等）
     source_type: varchar("source_type", { length: 100 }),
@@ -314,16 +314,16 @@ export const drugInfo = pgTable(
     material_name: text("material_name"),
     
     // 隐藏价格标志（0-显示，1-隐藏）
-    hidden_price_flag: integer("hidden_price_flag").default(0),
+    hidden_price_flag: int("hidden_price_flag").default(0),
     
     // 活跃分区标志
-    subarea_flag: integer("subarea_flag").default(0),
+    subarea_flag: int("subarea_flag").default(0),
     
     // 商品状态（0-正常，1-停用）
-    is_out_stock: integer("is_out_stock").default(0),
+    is_out_stock: int("is_out_stock").default(0),
     
     // 费率
-    fs_rate: numeric("fs_rate", { precision: 10, scale: 4 }),
+    fs_rate: decimal("fs_rate", { precision: 10, scale: 4 }),
     
     // 挂网时间
     net_time: varchar("net_time", { length: 50 }),
@@ -334,10 +334,10 @@ export const drugInfo = pgTable(
     // ============ 系统字段 ============
     
     // 创建时间
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
     
     // 更新时间
-    updated_at: timestamp("updated_at", { withTimezone: true }),
+    updated_at: datetime("updated_at"),
   },
   (table) => [
     index("idx_drug_info_product_name").on(table.product_name),
@@ -349,10 +349,10 @@ export const drugInfo = pgTable(
 // ============ 药品监控台账模块 ============
 
 // 用户追踪药品配置表
-export const userTrackedDrugs = pgTable(
+export const userTrackedDrugs = mysqlTable(
   "user_tracked_drugs",
   {
-    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
     // 产品名称
     product_name: varchar("product_name", { length: 500 }).notNull(),
@@ -370,27 +370,28 @@ export const userTrackedDrugs = pgTable(
     min_measure_unit: varchar("min_measure_unit", { length: 50 }),
     
     // 创建时间
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
     
     // 更新时间
-    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index("idx_utd_product_company").on(table.product_name, table.company_name),
-  ]
+    updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  }
+  // 注：复合前缀索引 idx_utd_product_company 不在此定义。
+  // product_name+company_name 均为 varchar(500)，utf8mb4 全长复合索引 4000 字节 > 3072 上限，
+  // 需前缀索引 (product_name(255), company_name(255))；而 drizzle-kit push 无法正确生成前缀语法，
+  // 故改由 scripts/add-prefix-index.ts 用原生 SQL 单独创建。
 );
 
 // 药品每日台账汇总历史表
-export const drugDailyLedgers = pgTable(
+export const drugDailyLedgers = mysqlTable(
   "drug_daily_ledgers",
   {
-    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
     // 追踪表关联ID (可以为 null，应对未来被删除的追踪记录，但历史还在)
     tracked_drug_id: varchar("tracked_drug_id", { length: 36 }),
     
     // 统计时间/日期 (YYYY-MM-DD)
-    stat_date: date("stat_date").notNull(),
+    stat_date: date("stat_date", { mode: 'string' }).notNull(),
     
     // 产品名称
     product_name: varchar("product_name", { length: 500 }).notNull(),
@@ -423,16 +424,60 @@ export const drugDailyLedgers = pgTable(
     net_time: varchar("net_time", { length: 50 }),
     
     // GPO挂网价格(元)
-    gpo_price: numeric("gpo_price", { precision: 15, scale: 4 }),
+    gpo_price: decimal("gpo_price", { precision: 15, scale: 4 }),
     
     // 省平台挂网价格(元)
-    provincial_price: numeric("provincial_price", { precision: 15, scale: 4 }),
+    provincial_price: decimal("provincial_price", { precision: 15, scale: 4 }),
     
     // 创建时间
-    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
   (table) => [
     index("idx_ddl_stat_date").on(table.stat_date),
     index("idx_ddl_product_name").on(table.product_name),
   ]
 );
+
+// ============ 整合药品数据表 ============
+
+// 合并去重后的药品信息表（由 merged-drug-service 同步生成）
+export const mergedDrugInfo = mysqlTable(
+  "merged_drug_info",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
+    source: varchar("source", { length: 50 }),
+    product_name: varchar("product_name", { length: 500 }),
+    national_drug_code: varchar("national_drug_code", { length: 100 }),
+    dosform: varchar("dosform", { length: 100 }),
+    company_name: varchar("company_name", { length: 500 }),
+    spec: text("spec"),
+    min_pac_quantity: varchar("min_pac_quantity", { length: 50 }),
+    min_pac_unit: varchar("min_pac_unit", { length: 50 }),
+    min_measure_unit: varchar("min_measure_unit", { length: 50 }),
+    drug_net_type: varchar("drug_net_type", { length: 100 }),
+    net_time: varchar("net_time", { length: 50 }),
+    medicare_type_label: varchar("medicare_type_label", { length: 50 }),
+    package_material: text("package_material"),
+    gd_price: decimal("gd_price", { precision: 15, scale: 4 }),
+    gz_bid_price: decimal("gz_bid_price", { precision: 15, scale: 4 }),
+    gz_min_unit_price: decimal("gz_min_unit_price", { precision: 15, scale: 4 }),
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+    synced_at: datetime("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  },
+  (table) => [
+    index("idx_merged_drug_info_product_name").on(table.product_name),
+    index("idx_merged_drug_info_source").on(table.source),
+  ]
+);
+
+// ============ 广东医保挂网调度器配置表（保留兼容） ============
+
+export const pubonlnSchedulerConfig = mysqlTable("pubonln_scheduler_config", {
+  id: serial().notNull().primaryKey(),
+  enabled: boolean("enabled").default(false).notNull(),
+  interval_minutes: int("interval_minutes").default(60).notNull(),
+  next_run_at: datetime("next_run_at"),
+  last_run_at: datetime("last_run_at"),
+  last_run_status: varchar("last_run_status", { length: 50 }),
+  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});

@@ -46,8 +46,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 校验 cron_secret
-    const expectedSecret = config.cron_secret;
+    // 校验 cron_secret：环境变量 CRON_SECRET 优先（Vercel Cron 自动以此发 Bearer），数据库 cron_secret 作为外部调用第二通道
+    const expectedSecret = process.env.CRON_SECRET || config.cron_secret;
     if (expectedSecret && passedSecret !== expectedSecret) {
       return NextResponse.json(
         { success: false, message: 'Unauthorized: invalid secret' },

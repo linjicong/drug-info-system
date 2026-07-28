@@ -3,7 +3,15 @@
  * 支持多数据源，防止重复抓取，记录抓取日志
  */
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import {
+  unifiedSchedulerConfig,
+  scrapeLog,
+  drugInfo,
+  pubonlnDrugInfo,
+  mergedDrugInfo,
+} from '@/storage/database/shared/schema';
+import { eq, desc } from 'drizzle-orm';
 import { scrapeDrugInfo } from './drug-scraper';
 import { scrapePubonlnDrugInfo } from './pubonln-scraper';
 
@@ -41,10 +49,6 @@ export interface ScrapeLog {
   error_message: string | null;
 }
 
-// 配置表名
-const CONFIG_TABLE = 'unified_scheduler_config';
-const LOG_TABLE = 'scrape_log';
-
 // 调度器间隔存储已被移除，由外部 Cron API 触发
 
 /**
@@ -52,40 +56,36 @@ const LOG_TABLE = 'scrape_log';
  */
 export async function getUnifiedSchedulerConfig(source: DataSource): Promise<UnifiedSchedulerConfig | null> {
   try {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from(CONFIG_TABLE)
-      .select('*')
-      .eq('source', source)
-      .single();
-    
-    if (error && error.code === 'PGRST116') {
-      // 没有记录，创建默认配置
-      const { data: newConfig, error: insertError } = await supabase
-        .from(CONFIG_TABLE)
-        .insert({
-          source,
-          enabled: false,
-          interval_minutes: 60,
-          running_status: 'idle',
-          cron_secret: Math.random().toString(36).substring(2, 15) // 生成初始随机秘钥
-        })
-        .select()
-        .single();
-      
-      if (insertError) {
-        console.error(`[UnifiedScheduler] 创建默认配置失败 (${source}):`, insertError);
-        return null;
-      }
-      return newConfig;
+    const rows = await db
+      .select()
+      .from(unifiedSchedulerConfig)
+      .where(eq(unifiedSchedulerConfig.source, source))
+      .limit(1);
+
+    if (rows.length > 0) {
+      return rows[0] as unknown as UnifiedSchedulerConfig;
     }
-    
-    if (error) {
-      console.error(`[UnifiedScheduler] 获取配置失败 (${source}):`, error);
-      return null;
-    }
-    
-    return data;
+
+    // 没有记录，创建默认配置。优先复用环境变量 CRON_SECRET（与 Vercel Cron 鉴权一致），否则生成密码学安全随机值
+    const cronSecret = process.env.CRON_SECRET || crypto.randomUUID();
+    const insertResult = await db.insert(unifiedSchedulerConfig).values({
+      source,
+      enabled: false,
+      interval_minutes: 60,
+      running_status: 'idle',
+      cron_secret: cronSecret,
+    });
+
+    // MySQL 不支持 RETURNING，按自增 lastInsertId 回查
+    const newConfigId = Number((insertResult as unknown as { lastInsertId: number | string | null }).lastInsertId ?? 0);
+    if (!newConfigId) return null;
+    const newRows = await db
+      .select()
+      .from(unifiedSchedulerConfig)
+      .where(eq(unifiedSchedulerConfig.id, newConfigId))
+      .limit(1);
+
+    return (newRows[0] as unknown as UnifiedSchedulerConfig) ?? null;
   } catch (error) {
     console.error(`[UnifiedScheduler] 获取配置失败 (${source}):`, error);
     return null;
@@ -129,21 +129,20 @@ export async function updateUnifiedSchedulerConfig(
       updateData.next_run_at = null;
     }
 
-    const supabase = getSupabaseClient();
-    const { data: updated, error } = await supabase
-      .from(CONFIG_TABLE)
-      .update(updateData)
-      .eq('id', currentConfig.id)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    await db
+      .update(unifiedSchedulerConfig)
+      .set(updateData)
+      .where(eq(unifiedSchedulerConfig.id, currentConfig.id));
 
     // 已移除对 restartUnifiedScheduler 的调用，依靠外部 Cron 定期拉取最新状态
+    // MySQL 不支持 RETURNING，回查更新后的配置
+    const updatedRows = await db
+      .select()
+      .from(unifiedSchedulerConfig)
+      .where(eq(unifiedSchedulerConfig.id, currentConfig.id))
+      .limit(1);
 
-    return updated;
+    return (updatedRows[0] as unknown as UnifiedSchedulerConfig) ?? null;
   } catch (error) {
     console.error(`[UnifiedScheduler] 更新配置失败 (${source}):`, error);
     throw error;
@@ -155,15 +154,15 @@ export async function updateUnifiedSchedulerConfig(
  */
 export async function canStartScrape(source: DataSource): Promise<{ canStart: boolean; reason: string }> {
   const config = await getUnifiedSchedulerConfig(source);
-  
+
   if (!config) {
     return { canStart: false, reason: '无法获取配置' };
   }
-  
+
   if (config.running_status === 'running') {
     return { canStart: false, reason: '已有抓取任务正在运行中' };
   }
-  
+
   return { canStart: true, reason: '' };
 }
 
@@ -177,14 +176,13 @@ export async function setRunningStatus(
   const config = await getUnifiedSchedulerConfig(source);
   if (!config) return;
 
-  const supabase = getSupabaseClient();
-  await supabase
-    .from(CONFIG_TABLE)
-    .update({
+  await db
+    .update(unifiedSchedulerConfig)
+    .set({
       running_status: status,
-      updated_at: new Date().toISOString(),
+      updated_at: new Date(),
     })
-    .eq('id', config.id);
+    .where(eq(unifiedSchedulerConfig.id, config.id));
 }
 
 /**
@@ -213,11 +211,10 @@ export async function finalizeScrapeRun(
     ).toISOString();
   }
 
-  const supabase = getSupabaseClient();
-  await supabase
-    .from(CONFIG_TABLE)
-    .update(updateData)
-    .eq('id', config.id);
+  await db
+    .update(unifiedSchedulerConfig)
+    .set(updateData)
+    .where(eq(unifiedSchedulerConfig.id, config.id));
 }
 
 /**
@@ -227,24 +224,21 @@ export async function createScrapeLog(
   source: DataSource,
   scrapeType: 'manual' | 'scheduled'
 ): Promise<number | null> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from(LOG_TABLE)
-    .insert({
+  try {
+    const insertResult = await db.insert(scrapeLog).values({
       source,
       scrape_type: scrapeType,
       status: 'running',
-      start_time: new Date().toISOString(),
-    })
-    .select('id')
-    .single();
+      start_time: new Date(),
+    });
 
-  if (error) {
+    // MySQL 不支持 RETURNING，使用自增 lastInsertId
+    const logId = Number((insertResult as unknown as { lastInsertId: number | string | null }).lastInsertId ?? 0);
+    return logId || null;
+  } catch (error) {
     console.error(`[UnifiedScheduler] 创建日志失败:`, error);
     return null;
   }
-
-  return data.id;
 }
 
 /**
@@ -260,46 +254,45 @@ export async function updateScrapeLog(
     error_message?: string;
   }
 ): Promise<void> {
-  const supabase = getSupabaseClient();
-  
   // 获取开始时间计算耗时
-  const { data: log } = await supabase
-    .from(LOG_TABLE)
-    .select('start_time')
-    .eq('id', logId)
-    .single();
+  const logRows = await db
+    .select({ start_time: scrapeLog.start_time })
+    .from(scrapeLog)
+    .where(eq(scrapeLog.id, logId))
+    .limit(1);
 
+  const log = logRows[0];
   const endTime = new Date();
-  const durationSeconds = log ? Math.floor((endTime.getTime() - new Date(log.start_time).getTime()) / 1000) : null;
+  const durationSeconds = log?.start_time
+    ? Math.floor((endTime.getTime() - new Date(log.start_time as unknown as string).getTime()) / 1000)
+    : null;
 
-  await supabase
-    .from(LOG_TABLE)
-    .update({
+  await db
+    .update(scrapeLog)
+    .set({
       ...data,
-      end_time: endTime.toISOString(),
+      end_time: endTime,
       duration_seconds: durationSeconds,
     })
-    .eq('id', logId);
+    .where(eq(scrapeLog.id, logId));
 }
 
 /**
  * 获取最新抓取日志
  */
 export async function getLatestScrapeLog(source: DataSource): Promise<ScrapeLog | null> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from(LOG_TABLE)
-    .select('*')
-    .eq('source', source)
-    .order('start_time', { ascending: false })
-    .limit(1)
-    .single();
+  try {
+    const rows = await db
+      .select()
+      .from(scrapeLog)
+      .where(eq(scrapeLog.source, source))
+      .orderBy(desc(scrapeLog.start_time))
+      .limit(1);
 
-  if (error) {
+    return (rows[0] as unknown as ScrapeLog) ?? null;
+  } catch {
     return null;
   }
-
-  return data;
 }
 
 /**
@@ -309,47 +302,56 @@ export async function getScrapeLogs(
   source: DataSource,
   limit: number = 10
 ): Promise<ScrapeLog[]> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from(LOG_TABLE)
-    .select('*')
-    .eq('source', source)
-    .order('start_time', { ascending: false })
-    .limit(limit);
+  try {
+    const rows = await db
+      .select()
+      .from(scrapeLog)
+      .where(eq(scrapeLog.source, source))
+      .orderBy(desc(scrapeLog.start_time))
+      .limit(limit);
 
-  if (error) {
+    return rows as unknown as ScrapeLog[];
+  } catch {
     return [];
   }
-
-  return data || [];
 }
 
 /**
  * 获取最新数据时间
  */
 export async function getLatestDataTime(source: DataSource): Promise<string | null> {
-  const supabase = getSupabaseClient();
-  let table = 'drug_info';
-  let timestampCol = 'created_at';
-  if (source === 'gd_pubonln') {
-    table = 'pubonln_drug_info';
-  } else if (source === 'merged_drug') {
-    table = 'merged_drug_info';
-    timestampCol = 'synced_at';
-  }
-  
-  const { data, error } = await supabase
-    .from(table)
-    .select(timestampCol)
-    .order(timestampCol, { ascending: false })
-    .limit(1)
-    .single();
+  try {
+    if (source === 'gz_drug') {
+      const rows = await db
+        .select({ created_at: drugInfo.created_at })
+        .from(drugInfo)
+        .orderBy(desc(drugInfo.created_at))
+        .limit(1);
+      return (rows[0]?.created_at as unknown as string) ?? null;
+    }
 
-  if (error || !data) {
+    if (source === 'gd_pubonln') {
+      const rows = await db
+        .select({ created_at: pubonlnDrugInfo.created_at })
+        .from(pubonlnDrugInfo)
+        .orderBy(desc(pubonlnDrugInfo.created_at))
+        .limit(1);
+      return (rows[0]?.created_at as unknown as string) ?? null;
+    }
+
+    if (source === 'merged_drug') {
+      const rows = await db
+        .select({ synced_at: mergedDrugInfo.synced_at })
+        .from(mergedDrugInfo)
+        .orderBy(desc(mergedDrugInfo.synced_at))
+        .limit(1);
+      return (rows[0]?.synced_at as unknown as string) ?? null;
+    }
+
+    return null;
+  } catch {
     return null;
   }
-
-  return (data as any)[timestampCol];
 }
 
 /**

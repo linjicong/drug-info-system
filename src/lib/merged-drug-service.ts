@@ -5,7 +5,9 @@
  * 同时提供合并数据的新表查询和导出服务。
  */
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import { mergedDrugInfo, drugInfo, pubonlnDrugInfo } from '@/storage/database/shared/schema';
+import { and, asc, count, desc, eq, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
 import {
   startMergeProgress,
@@ -31,7 +33,7 @@ interface GdDrugRow {
   pubonln_time?: string;
   jyl_category?: string;
   pacmatl?: string;
-  min_pac_pubonln_pric?: number;
+  min_pac_pubonln_pric?: number | string;
 }
 
 /** 广州采购平台数据库行类型（与 drug_info 表字段对应） */
@@ -49,8 +51,8 @@ interface GzDrugRow {
   net_time?: string;
   medicare_type?: number;
   material_name?: string;
-  bid_price?: number;
-  min_unit_price?: number;
+  bid_price?: number | string;
+  min_unit_price?: number | string;
 }
 
 // ─── 工具函数 ─────────────────────────────────────────────────────
@@ -109,7 +111,8 @@ function mapGdRow(row: GdDrugRow): Omit<MergedDrugInfo, 'id'> {
     net_time: row.pubonln_time || undefined,
     medicare_type_label: row.jyl_category || undefined,
     package_material: row.pacmatl || undefined,
-    gd_price: row.min_pac_pubonln_pric ?? undefined,
+    // drizzle decimal 返回 string，转 number 保持与原 Supabase numeric 行为一致
+    gd_price: row.min_pac_pubonln_pric != null ? Number(row.min_pac_pubonln_pric) : undefined,
   };
 }
 
@@ -131,9 +134,21 @@ function mapGzRow(row: GzDrugRow): Omit<MergedDrugInfo, 'id'> {
     net_time: row.net_time || undefined,
     medicare_type_label: formatMedicareType(row.medicare_type),
     package_material: row.material_name || undefined,
-    gz_bid_price: row.bid_price ?? undefined,
-    gz_min_unit_price: row.min_unit_price ?? undefined,
+    gz_bid_price: row.bid_price != null ? Number(row.bid_price) : undefined,
+    gz_min_unit_price: row.min_unit_price != null ? Number(row.min_unit_price) : undefined,
   };
+}
+
+/**
+ * 规整查询返回的合并行：decimal 字段转 number，保持前端类型一致
+ */
+export function normalizeMergedRow(row: Record<string, unknown>): MergedDrugInfo {
+  return {
+    ...row,
+    gd_price: row.gd_price != null ? Number(row.gd_price) : null,
+    gz_bid_price: row.gz_bid_price != null ? Number(row.gz_bid_price) : null,
+    gz_min_unit_price: row.gz_min_unit_price != null ? Number(row.gz_min_unit_price) : null,
+  } as MergedDrugInfo;
 }
 
 // ─── 核心同步与合并逻辑 ──────────────────────────────────────────────
@@ -142,30 +157,38 @@ function mapGzRow(row: GzDrugRow): Omit<MergedDrugInfo, 'id'> {
  * 提取全量广东医保数据
  */
 async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
-  const client = getSupabaseClient();
   let allData: GdDrugRow[] = [];
   let offset = 0;
   const batchSize = 1000;
-  const selectFields = [
-    'id', 'genname', 'drug_code', 'dosform_name', 'prodentp_name',
-    'reg_spec_name', 'convrat', 'minpac_name', 'minunt_name',
-    'drug_select_type', 'pubonln_time', 'jyl_category', 'pacmatl',
-    'min_pac_pubonln_pric'
-  ].join(',');
 
   while (true) {
-    const { data, error } = await client
-      .from('pubonln_drug_info')
-      .select(selectFields)
-      .order('id', { ascending: true })
-      .range(offset, offset + batchSize - 1);
-      
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    
-    allData = allData.concat(data as unknown as GdDrugRow[]);
+    const rows = await db
+      .select({
+        id: pubonlnDrugInfo.id,
+        genname: pubonlnDrugInfo.genname,
+        drug_code: pubonlnDrugInfo.drug_code,
+        dosform_name: pubonlnDrugInfo.dosform_name,
+        prodentp_name: pubonlnDrugInfo.prodentp_name,
+        reg_spec_name: pubonlnDrugInfo.reg_spec_name,
+        convrat: pubonlnDrugInfo.convrat,
+        minpac_name: pubonlnDrugInfo.minpac_name,
+        minunt_name: pubonlnDrugInfo.minunt_name,
+        drug_select_type: pubonlnDrugInfo.drug_select_type,
+        pubonln_time: pubonlnDrugInfo.pubonln_time,
+        jyl_category: pubonlnDrugInfo.jyl_category,
+        pacmatl: pubonlnDrugInfo.pacmatl,
+        min_pac_pubonln_pric: pubonlnDrugInfo.min_pac_pubonln_pric,
+      })
+      .from(pubonlnDrugInfo)
+      .orderBy(asc(pubonlnDrugInfo.id))
+      .offset(offset)
+      .limit(batchSize);
+
+    if (rows.length === 0) break;
+
+    allData = allData.concat(rows as unknown as GdDrugRow[]);
     offset += batchSize;
-    if (data.length < batchSize) break;
+    if (rows.length < batchSize) break;
   }
   return allData;
 }
@@ -174,29 +197,39 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
  * 提取全量广州采购平台数据
  */
 async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
-  const client = getSupabaseClient();
   let allData: GzDrugRow[] = [];
   let offset = 0;
   const batchSize = 1000;
-  const selectFields = [
-    'id', 'product_name', 'national_drug_code', 'medicinemodel', 'company_name_sc',
-    'outlook', 'factor', 'unit', 'min_unit', 'source_type', 'net_time',
-    'medicare_type', 'material_name', 'bid_price', 'min_unit_price'
-  ].join(',');
 
   while (true) {
-    const { data, error } = await client
-      .from('drug_info')
-      .select(selectFields)
-      .order('id', { ascending: true })
-      .range(offset, offset + batchSize - 1);
-      
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    
-    allData = allData.concat(data as unknown as GzDrugRow[]);
+    const rows = await db
+      .select({
+        id: drugInfo.id,
+        product_name: drugInfo.product_name,
+        national_drug_code: drugInfo.national_drug_code,
+        medicinemodel: drugInfo.medicinemodel,
+        company_name_sc: drugInfo.company_name_sc,
+        outlook: drugInfo.outlook,
+        factor: drugInfo.factor,
+        unit: drugInfo.unit,
+        min_unit: drugInfo.min_unit,
+        source_type: drugInfo.source_type,
+        net_time: drugInfo.net_time,
+        medicare_type: drugInfo.medicare_type,
+        material_name: drugInfo.material_name,
+        bid_price: drugInfo.bid_price,
+        min_unit_price: drugInfo.min_unit_price,
+      })
+      .from(drugInfo)
+      .orderBy(asc(drugInfo.id))
+      .offset(offset)
+      .limit(batchSize);
+
+    if (rows.length === 0) break;
+
+    allData = allData.concat(rows as unknown as GzDrugRow[]);
     offset += batchSize;
-    if (data.length < batchSize) break;
+    if (rows.length < batchSize) break;
   }
   return allData;
 }
@@ -232,8 +265,8 @@ function mergeAndDedupe(gdRows: GdDrugRow[], gzRows: GzDrugRow[]): Omit<MergedDr
     const existing = mergedMap.get(key);
     if (existing) {
       existing.source = 'both';
-      existing.gz_bid_price = row.bid_price ?? undefined;
-      existing.gz_min_unit_price = row.min_unit_price ?? undefined;
+      existing.gz_bid_price = row.bid_price != null ? Number(row.bid_price) : undefined;
+      existing.gz_min_unit_price = row.min_unit_price != null ? Number(row.min_unit_price) : undefined;
       // 对于判定为相同的行，除了保留广州特有的价格字段外，需要合并的其他共用字段均取广东医保数据（不进行回填）
     } else {
       mergedMap.set(key, mapGzRow(row));
@@ -241,6 +274,63 @@ function mergeAndDedupe(gdRows: GdDrugRow[], gzRows: GzDrugRow[]): Omit<MergedDr
   }
 
   return Array.from(mergedMap.values());
+}
+
+/**
+ * 构建合并数据查询的动态筛选条件
+ */
+function buildMergedConditions(
+  options: {
+    searchKeyword?: string;
+    productName?: string;
+    companyName?: string;
+    source?: string;
+    medicareTypeLabel?: string;
+    nationalDrugCode?: string;
+    minPacQuantity?: string;
+    minMeasureUnit?: string;
+  } | undefined,
+  keyword?: string
+): SQL | undefined {
+  const conditions: SQL[] = [];
+
+  if (keyword) {
+    // MySQL 无 ILIKE，使用 LIKE（TiDB 默认 collation 对中文无影响；英文大小写敏感性依赖 collation）
+    conditions.push(or(
+      like(mergedDrugInfo.product_name, `%${keyword}%`),
+      like(mergedDrugInfo.company_name, `%${keyword}%`)
+    ) as SQL);
+  }
+
+  if (options?.productName) {
+    conditions.push(like(mergedDrugInfo.product_name, `%${decodeURIComponent(options.productName)}%`) as SQL);
+  }
+
+  if (options?.companyName) {
+    conditions.push(like(mergedDrugInfo.company_name, `%${options.companyName}%`) as SQL);
+  }
+
+  if (options?.source) {
+    conditions.push(eq(mergedDrugInfo.source, options.source) as SQL);
+  }
+
+  if (options?.medicareTypeLabel) {
+    conditions.push(eq(mergedDrugInfo.medicare_type_label, options.medicareTypeLabel) as SQL);
+  }
+
+  if (options?.nationalDrugCode) {
+    conditions.push(like(mergedDrugInfo.national_drug_code, `%${options.nationalDrugCode}%`) as SQL);
+  }
+
+  if (options?.minPacQuantity) {
+    conditions.push(like(mergedDrugInfo.min_pac_quantity, `%${decodeURIComponent(options.minPacQuantity)}%`) as SQL);
+  }
+
+  if (options?.minMeasureUnit) {
+    conditions.push(like(mergedDrugInfo.min_measure_unit, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
 /**
@@ -260,8 +350,8 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
 
     updateMergeProgress({ phase: '正在合并去重数据...' });
     const mergedData = mergeAndDedupe(gdRows, gzRows);
-    
-    // 生成插入记录（使用 crypto.randomUUID 生成 id，防止 edge runtime 冲突可使用内置能力，这里用简单时间戳加随机字符串作为折中保证无依赖）
+
+    // 生成插入记录（应用层生成 UUID，避免 MySQL 不支持 RETURNING 需回查）
     const recordsToInsert = mergedData.map(item => ({
       id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Date.now().toString(36),
       source: item.source,
@@ -281,29 +371,21 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
       gz_bid_price: item.gz_bid_price ?? null,
       gz_min_unit_price: item.gz_min_unit_price ?? null,
     }));
-    
+
     updateMergeProgress({ mergedTotal: recordsToInsert.length });
 
-    const client = getSupabaseClient();
-    
     updateMergeProgress({ phase: '清空旧合并数据...' });
-    const { error: delError } = await client.from('merged_drug_info').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    if (delError) {
-      throw new Error(`清空数据失败: ${delError.message}`);
-    }
+    // 清空全表（等价于原 .neq('id', 全零UUID) 的清表语义）
+    await db.delete(mergedDrugInfo);
 
     updateMergeProgress({ phase: '正在将合并数据写入新表...' });
     let savedCount = 0;
     const insBatchSize = 500;
-    
+
     for (let i = 0; i < recordsToInsert.length; i += insBatchSize) {
       const batch = recordsToInsert.slice(i, i + insBatchSize);
-      const { error: insError } = await client.from('merged_drug_info').insert(batch);
-      
-      if (insError) {
-        throw new Error(`写入批次数据失败 (offset: ${i}): ${insError.message}`);
-      }
-      
+      await db.insert(mergedDrugInfo).values(batch as never);
+
       savedCount += batch.length;
       updateMergeProgress({ savedCount });
     }
@@ -342,63 +424,26 @@ export async function getMergedDrugList(options?: {
   const offset = (page - 1) * pageSize;
   const keyword = options?.searchKeyword ? decodeURIComponent(options.searchKeyword) : undefined;
 
-  const client = getSupabaseClient();
+  const whereClause = buildMergedConditions(options, keyword);
 
-  let query = client
-    .from('merged_drug_info')
-    .select('*', { count: 'exact' })
-    .order('created_at', { ascending: false });
-
-  if (keyword) {
-    query = query.or(
-      `product_name.ilike.%${keyword}%,company_name.ilike.%${keyword}%`
-    );
-  }
-
-  if (options?.productName) {
-    query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
-  }
-
-  // 生产企业筛选
-  if (options?.companyName) {
-    query = query.ilike('company_name', `%${options.companyName}%`);
-  }
-
-  // 数据来源筛选
-  if (options?.source) {
-    query = query.eq('source', options.source);
-  }
-
-  // 医保类别筛选
-  if (options?.medicareTypeLabel) {
-    query = query.eq('medicare_type_label', options.medicareTypeLabel);
-  }
-
-  // 医保编码筛选
-  if (options?.nationalDrugCode) {
-    query = query.ilike('national_drug_code', `%${options.nationalDrugCode}%`);
-  }
-
-  if (options?.minPacQuantity) {
-    query = query.ilike('min_pac_quantity', `%${decodeURIComponent(options.minPacQuantity)}%`);
-  }
-
-  if (options?.minMeasureUnit) {
-    query = query.ilike('min_measure_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
-  }
-
-  query = query.range(offset, offset + pageSize - 1);
-
-  const { data, error, count } = await query;
-
-  if (error) {
-    console.error('[MergedDrugService] 查询合并数据失败:', error.message);
-    throw new Error(`查询合并数据失败: ${error.message}`);
-  }
+  // 并行查询数据与总数
+  const [dataRows, countRows] = await Promise.all([
+    db
+      .select()
+      .from(mergedDrugInfo)
+      .where(whereClause)
+      .orderBy(desc(mergedDrugInfo.created_at))
+      .offset(offset)
+      .limit(pageSize),
+    db
+      .select({ count: count() })
+      .from(mergedDrugInfo)
+      .where(whereClause),
+  ]);
 
   return {
-    data: (data || []) as MergedDrugInfo[],
-    total: count || 0,
+    data: dataRows.map(row => normalizeMergedRow(row as unknown as Record<string, unknown>)),
+    total: Number(countRows[0]?.count ?? 0),
   };
 }
 
@@ -415,70 +460,27 @@ export async function exportMergedDrugData(options?: {
   minPacQuantity?: string;
   minMeasureUnit?: string;
 }): Promise<MergedDrugInfo[]> {
-  const client = getSupabaseClient();
   const keyword = options?.searchKeyword ? decodeURIComponent(options.searchKeyword) : undefined;
-  
+  const whereClause = buildMergedConditions(options, keyword);
+
   let allData: MergedDrugInfo[] = [];
   let offset = 0;
   const batchSize = 1000;
 
   while (true) {
-    let query = client
-      .from('merged_drug_info')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + batchSize - 1);
+    const rows = await db
+      .select()
+      .from(mergedDrugInfo)
+      .where(whereClause)
+      .orderBy(desc(mergedDrugInfo.created_at))
+      .offset(offset)
+      .limit(batchSize);
 
-    if (keyword) {
-      query = query.or(
-        `product_name.ilike.%${keyword}%,company_name.ilike.%${keyword}%`
-      );
-    }
+    if (rows.length === 0) break;
 
-    if (options?.productName) {
-      query = query.ilike('product_name', `%${decodeURIComponent(options.productName)}%`);
-    }
-
-    // 生产企业筛选
-    if (options?.companyName) {
-      query = query.ilike('company_name', `%${options.companyName}%`);
-    }
-
-    // 数据来源筛选
-    if (options?.source) {
-      query = query.eq('source', options.source);
-    }
-
-    // 医保类别筛选
-    if (options?.medicareTypeLabel) {
-      query = query.eq('medicare_type_label', options.medicareTypeLabel);
-    }
-
-    // 医保编码筛选
-    if (options?.nationalDrugCode) {
-      query = query.ilike('national_drug_code', `%${options.nationalDrugCode}%`);
-    }
-
-    if (options?.minPacQuantity) {
-      query = query.ilike('min_pac_quantity', `%${decodeURIComponent(options.minPacQuantity)}%`);
-    }
-
-    if (options?.minMeasureUnit) {
-      query = query.ilike('min_measure_unit', `%${decodeURIComponent(options.minMeasureUnit)}%`);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('[MergedDrugService] 导出合并数据失败:', error.message);
-      throw new Error(`导出合并数据失败: ${error.message}`);
-    }
-
-    if (!data || data.length === 0) break;
-
-    allData = allData.concat(data as MergedDrugInfo[]);
+    allData = allData.concat(rows.map(row => normalizeMergedRow(row as unknown as Record<string, unknown>)));
     offset += batchSize;
-    if (data.length < batchSize) break;
+    if (rows.length < batchSize) break;
   }
 
   console.log(`[MergedDrugService] 导出数据: ${allData.length} 条`);

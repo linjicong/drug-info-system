@@ -3,7 +3,9 @@
  * API 端点通过环境变量 PUBONLN_API_URL 配置
  */
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import { pubonlnDrugInfo } from '@/storage/database/shared/schema';
+import { and, count, desc, isNotNull, like, or, type SQL } from 'drizzle-orm';
 import https from 'https';
 import { getPubonlnApiConfig, buildRequestOptions } from './api-config';
 import { promisePool } from './concurrent-pool';
@@ -183,19 +185,69 @@ let globalNewCount = 0;
 let globalTotalProcessed = 0;
 
 /**
+ * 规整查询返回行：decimal 字段转 number（drizzle decimal 返回 string，原 Supabase numeric 返回 number）
+ */
+export function normalizePubonlnRow(row: Record<string, unknown>): PubonlnDrugInfo {
+  return {
+    ...row,
+    min_pac_pubonln_pric: row.min_pac_pubonln_pric != null ? Number(row.min_pac_pubonln_pric) : undefined,
+  } as PubonlnDrugInfo;
+}
+
+/**
+ * 构建挂网药品列表查询的动态筛选条件
+ */
+function buildPubonlnConditions(options?: {
+  searchKeyword?: string;
+  productName?: string;
+  nationalDrugCode?: string;
+  companyName?: string;
+  minPacQuantity?: string;
+  minMeasureUnit?: string;
+}): SQL | undefined {
+  const conditions: SQL[] = [];
+
+  // 搜索条件 - 多字段搜索
+  if (options?.searchKeyword) {
+    const keyword = decodeURIComponent(options.searchKeyword);
+    conditions.push(or(
+      like(pubonlnDrugInfo.genname, `%${keyword}%`),
+      like(pubonlnDrugInfo.trade_name, `%${keyword}%`),
+      like(pubonlnDrugInfo.listing_license_holder, `%${keyword}%`),
+      like(pubonlnDrugInfo.prodentp_name, `%${keyword}%`)
+    ) as SQL);
+  }
+
+  if (options?.productName) {
+    conditions.push(like(pubonlnDrugInfo.genname, `%${decodeURIComponent(options.productName)}%`) as SQL);
+  }
+
+  if (options?.companyName) {
+    conditions.push(like(pubonlnDrugInfo.prodentp_name, `%${decodeURIComponent(options.companyName)}%`) as SQL);
+  }
+
+  if (options?.minPacQuantity) {
+    conditions.push(like(pubonlnDrugInfo.convrat, `%${decodeURIComponent(options.minPacQuantity)}%`) as SQL);
+  }
+
+  if (options?.minMeasureUnit) {
+    conditions.push(like(pubonlnDrugInfo.minunt_name, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
+  }
+
+  // 国家医保代码筛选
+  if (options?.nationalDrugCode) {
+    conditions.push(like(pubonlnDrugInfo.drug_code, `%${decodeURIComponent(options.nationalDrugCode)}%`) as SQL);
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
+/**
  * 清空挂网药品数据表
  */
 async function clearPubonlnDrugTable(): Promise<void> {
-  const client = getSupabaseClient();
-  const { error } = await client
-    .from('pubonln_drug_info')
-    .delete()
-    .neq('id', '00000000-0000-0000-0000-000000000000');
-  
-  if (error) {
-    console.error('[PubonlnScraper] 清空表失败:', error.message);
-    throw error;
-  }
+  // 清空全表（等价于原 .neq('id', 全零UUID) 的清表语义）
+  await db.delete(pubonlnDrugInfo);
   console.log('[PubonlnScraper] 已清空旧数据');
 }
 
@@ -260,7 +312,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
     }
 
     const remainingPages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-    
+
     console.log(`[PubonlnScraper] 开始并发抓取剩余 ${remainingPages.length} 页，并发数: ${pageConcurrency}`);
 
     await promisePool(
@@ -269,18 +321,18 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
       async (page) => {
         try {
           const pageData = await fetchPubonlnDrugPage(page, pageSize);
-          
+
           if (pageData.drugs.length > 0) {
             await savePubonlnDrugBatch(pageData.drugs);
             globalTotalProcessed += pageData.drugs.length;
-            
+
             updateProgress(PROGRESS_SOURCE, {
               processedCount: globalTotalProcessed,
               newCount: globalNewCount,
               updateCount: 0,
               currentPage: page,
             });
-            
+
             console.log(`[PubonlnScraper] 第 ${page} 页完成，进度: ${globalTotalProcessed}/${totalRecords}`);
           }
         } catch (error) {
@@ -305,9 +357,9 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
   } catch (error) {
     console.error('[PubonlnScraper] 抓取错误:', error);
     const errorMsg = error instanceof Error ? error.message : '未知错误';
-    
+
     setErrorProgress(PROGRESS_SOURCE, errorMsg);
-    
+
     return {
       success: false,
       message: `抓取失败: ${errorMsg}`,
@@ -416,10 +468,10 @@ async function fetchPubonlnDrugPage(
  */
 function parseNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
-  
+
   // 如果是数字，直接返回
   if (typeof value === 'number') return value;
-  
+
   // 如果是字符串，尝试解析
   if (typeof value === 'string') {
     // 清理字符串，移除可能的非数字字符（除了小数点和负号）
@@ -427,7 +479,7 @@ function parseNumber(value: unknown): number | undefined {
     const num = parseFloat(cleaned);
     return isNaN(num) ? undefined : num;
   }
-  
+
   // 如果是对象（例如 {68800 -4 false finite true}），尝试提取数字
   if (typeof value === 'object') {
     const objStr = JSON.stringify(value);
@@ -442,7 +494,7 @@ function parseNumber(value: unknown): number | undefined {
     }
     return undefined;
   }
-  
+
   return undefined;
 }
 
@@ -460,8 +512,6 @@ function parseInteger(value: string | number | undefined): number | undefined {
  * 保存单页挂网药品数据到数据库
  */
 async function savePubonlnDrugBatch(drugList: PubonlnDrugInfo[]): Promise<void> {
-  const client = getSupabaseClient();
-
   if (drugList.length === 0) {
     return;
   }
@@ -469,30 +519,24 @@ async function savePubonlnDrugBatch(drugList: PubonlnDrugInfo[]): Promise<void> 
   // 批量插入
   const recordsToInsert = drugList.map((drug) => ({
     ...drug,
-    created_at: new Date().toISOString(),
+    created_at: new Date(),
   }));
 
-  const { error: insertError, count } = await client
-    .from('pubonln_drug_info')
-    .insert(recordsToInsert as never, { count: 'exact' });
-
-  if (insertError) {
-    console.error('[PubonlnScraper] 批量插入失败:', insertError.message);
+  try {
+    await db.insert(pubonlnDrugInfo).values(recordsToInsert as never);
+    globalNewCount += drugList.length;
+  } catch (error) {
+    console.error('[PubonlnScraper] 批量插入失败:', error);
 
     // 批量插入失败，尝试单条插入
     for (const drug of recordsToInsert) {
-      const { error } = await client
-        .from('pubonln_drug_info')
-        .insert(drug as never);
-
-      if (!error) {
+      try {
+        await db.insert(pubonlnDrugInfo).values(drug as never);
         globalNewCount++;
-      } else {
-        console.error('[PubonlnScraper] 单条插入失败:', error.message);
+      } catch (singleError) {
+        console.error('[PubonlnScraper] 单条插入失败:', singleError instanceof Error ? singleError.message : singleError);
       }
     }
-  } else {
-    globalNewCount += count || recordsToInsert.length;
   }
 }
 
@@ -509,60 +553,34 @@ export async function getPubonlnDrugList(options?: {
   minPacQuantity?: string;
   minMeasureUnit?: string;
 }): Promise<{ data: PubonlnDrugInfo[]; total: number }> {
-  const client = getSupabaseClient();
   const page = options?.page || 1;
   const pageSize = options?.pageSize || 20;
   const offset = (page - 1) * pageSize;
 
-  let query = client
-    .from('pubonln_drug_info')
-    .select('*', { count: 'exact' })
-    .order('created_at', { ascending: false });
-
-  // 搜索条件 - 多字段搜索
   if (options?.searchKeyword) {
-    const keyword = decodeURIComponent(options.searchKeyword);
-    console.log('[PubonlnScraper] 搜索关键词:', keyword);
-    
-    query = query.or(
-      `genname.ilike.%${keyword}%,trade_name.ilike.%${keyword}%,listing_license_holder.ilike.%${keyword}%,prodentp_name.ilike.%${keyword}%`
-    );
+    console.log('[PubonlnScraper] 搜索关键词:', decodeURIComponent(options.searchKeyword));
   }
 
-  if (options?.productName) {
-    query = query.ilike('genname', `%${decodeURIComponent(options.productName)}%`);
-  }
+  const whereClause = buildPubonlnConditions(options);
 
-  if (options?.companyName) {
-    query = query.ilike('prodentp_name', `%${decodeURIComponent(options.companyName)}%`);
-  }
-
-  if (options?.minPacQuantity) {
-    query = query.ilike('convrat', `%${decodeURIComponent(options.minPacQuantity)}%`);
-  }
-
-  if (options?.minMeasureUnit) {
-    query = query.ilike('minunt_name', `%${decodeURIComponent(options.minMeasureUnit)}%`);
-  }
-
-  // 国家医保代码筛选
-  if (options?.nationalDrugCode) {
-    query = query.ilike('drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
-  }
-
-  // 分页
-  query = query.range(offset, offset + pageSize - 1);
-
-  const { data, error, count } = await query;
-
-  if (error) {
-    console.error('[PubonlnScraper] 查询失败:', error);
-    throw new Error(`查询失败: ${error.message}`);
-  }
+  // 并行查询数据与总数
+  const [dataRows, countRows] = await Promise.all([
+    db
+      .select()
+      .from(pubonlnDrugInfo)
+      .where(whereClause)
+      .orderBy(desc(pubonlnDrugInfo.created_at))
+      .offset(offset)
+      .limit(pageSize),
+    db
+      .select({ count: count() })
+      .from(pubonlnDrugInfo)
+      .where(whereClause),
+  ]);
 
   return {
-    data: (data || []) as PubonlnDrugInfo[],
-    total: count || 0,
+    data: dataRows.map(row => normalizePubonlnRow(row as unknown as Record<string, unknown>)),
+    total: Number(countRows[0]?.count ?? 0),
   };
 }
 
@@ -577,59 +595,25 @@ export async function exportPubonlnDrugData(options?: {
   minPacQuantity?: string;
   minMeasureUnit?: string;
 }): Promise<PubonlnDrugInfo[]> {
-  const client = getSupabaseClient();
+  const whereClause = buildPubonlnConditions(options);
   const allData: PubonlnDrugInfo[] = [];
   const batchSize = 1000;
   let offset = 0;
   let hasMore = true;
 
   while (hasMore) {
-    let query = client
-      .from('pubonln_drug_info')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + batchSize - 1);
+    const rows = await db
+      .select()
+      .from(pubonlnDrugInfo)
+      .where(whereClause)
+      .orderBy(desc(pubonlnDrugInfo.created_at))
+      .offset(offset)
+      .limit(batchSize);
 
-    if (options?.searchKeyword) {
-      const keyword = decodeURIComponent(options.searchKeyword);
-      query = query.or(
-        `genname.ilike.%${keyword}%,trade_name.ilike.%${keyword}%,listing_license_holder.ilike.%${keyword}%,prodentp_name.ilike.%${keyword}%`
-      );
-    }
-
-    if (options?.productName) {
-      query = query.ilike('genname', `%${decodeURIComponent(options.productName)}%`);
-    }
-
-    if (options?.companyName) {
-      query = query.ilike('prodentp_name', `%${decodeURIComponent(options.companyName)}%`);
-    }
-
-    if (options?.minPacQuantity) {
-      query = query.ilike('convrat', `%${decodeURIComponent(options.minPacQuantity)}%`);
-    }
-
-    if (options?.minMeasureUnit) {
-      query = query.ilike('minunt_name', `%${decodeURIComponent(options.minMeasureUnit)}%`);
-    }
-
-    if (options?.nationalDrugCode) {
-      query = query.ilike('drug_code', `%${decodeURIComponent(options.nationalDrugCode)}%`);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      throw new Error(`导出失败: ${error.message}`);
-    }
-
-    if (data && data.length > 0) {
-      allData.push(...(data as PubonlnDrugInfo[]));
+    if (rows.length > 0) {
+      allData.push(...rows.map(row => normalizePubonlnRow(row as unknown as Record<string, unknown>)));
       offset += batchSize;
-
-      if (data.length < batchSize) {
-        hasMore = false;
-      }
+      hasMore = rows.length === batchSize;
     } else {
       hasMore = false;
     }
@@ -646,26 +630,19 @@ export async function getPubonlnStatistics(): Promise<{
   total: number;
   lastUpdate: string | null;
 }> {
-  const client = getSupabaseClient();
-
-  const { count, error } = await client
-    .from('pubonln_drug_info')
-    .select('*', { count: 'exact', head: true });
-
-  if (error) {
-    throw new Error(`获取统计失败: ${error.message}`);
-  }
+  const countRows = await db.select({ count: count() }).from(pubonlnDrugInfo);
+  const total = Number(countRows[0]?.count ?? 0);
 
   // 获取最后更新时间
-  const { data: lastRecord } = await client
-    .from('pubonln_drug_info')
-    .select('updated_at')
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const lastRows = await db
+    .select({ updated_at: pubonlnDrugInfo.updated_at })
+    .from(pubonlnDrugInfo)
+    .where(isNotNull(pubonlnDrugInfo.updated_at))
+    .orderBy(desc(pubonlnDrugInfo.updated_at))
+    .limit(1);
 
   return {
-    total: count || 0,
-    lastUpdate: lastRecord?.updated_at || null,
+    total,
+    lastUpdate: (lastRows[0]?.updated_at as unknown as string) ?? null,
   };
 }

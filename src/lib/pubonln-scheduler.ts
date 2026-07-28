@@ -2,52 +2,35 @@
  * 广东医保挂网药品后端定时任务调度器
  */
 
-import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { db } from '@/storage/database/db';
+import { pubonlnSchedulerConfig } from '@/storage/database/shared/schema';
+import { eq } from 'drizzle-orm';
 import { scrapePubonlnDrugInfo } from './pubonln-scraper';
 
 // 调度器状态
 let schedulerInterval: NodeJS.Timeout | null = null;
 let isInitialized = false;
 
-// 配置表名
-const CONFIG_TABLE = 'pubonln_scheduler_config';
-
 /**
  * 获取当前调度器配置
  */
 export async function getPubonlnSchedulerConfig() {
   try {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from(CONFIG_TABLE)
-      .select('*')
-      .limit(1)
-      .single();
-    
-    if (error && error.code === 'PGRST116') {
-      // 没有记录，创建默认配置
-      const { data: newConfig, error: insertError } = await supabase
-        .from(CONFIG_TABLE)
-        .insert({
-          enabled: false,
-          interval_minutes: 60,
-        })
-        .select()
-        .single();
-      
-      if (insertError) {
-        console.error('[PubonlnScheduler] 创建默认配置失败:', insertError);
-        return null;
-      }
-      return newConfig;
+    const rows = await db.select().from(pubonlnSchedulerConfig).limit(1);
+
+    if (rows.length > 0) {
+      return rows[0];
     }
-    
-    if (error) {
-      console.error('[PubonlnScheduler] 获取配置失败:', error);
-      return null;
-    }
-    
-    return data;
+
+    // 没有记录，创建默认配置
+    await db.insert(pubonlnSchedulerConfig).values({
+      enabled: false,
+      interval_minutes: 60,
+    });
+
+    // MySQL 不支持 RETURNING，回查新配置
+    const newRows = await db.select().from(pubonlnSchedulerConfig).limit(1);
+    return newRows[0] ?? null;
   } catch (error) {
     console.error('[PubonlnScheduler] 获取配置失败:', error);
     return null;
@@ -88,22 +71,22 @@ export async function updatePubonlnSchedulerConfig(config: {
       updateData.next_run_at = null;
     }
 
-    const supabase = getSupabaseClient();
-    const { data: updated, error } = await supabase
-      .from(CONFIG_TABLE)
-      .update(updateData)
-      .eq('id', currentConfig.id)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
+    await db
+      .update(pubonlnSchedulerConfig)
+      .set(updateData)
+      .where(eq(pubonlnSchedulerConfig.id, currentConfig.id));
 
     // 重启调度器
     restartPubonlnScheduler();
 
-    return updated;
+    // MySQL 不支持 RETURNING，回查更新后的配置
+    const updatedRows = await db
+      .select()
+      .from(pubonlnSchedulerConfig)
+      .where(eq(pubonlnSchedulerConfig.id, currentConfig.id))
+      .limit(1);
+
+    return updatedRows[0] ?? null;
   } catch (error) {
     console.error('[PubonlnScheduler] 更新配置失败:', error);
     throw error;
@@ -115,43 +98,41 @@ export async function updatePubonlnSchedulerConfig(config: {
  */
 async function executeFetchTask() {
   console.log('[PubonlnScheduler] 开始执行定时抓取任务...');
-  
+
   try {
     const result = await scrapePubonlnDrugInfo();
-    
+
     // 更新最后执行状态和下次执行时间
     const config = await getPubonlnSchedulerConfig();
     if (config) {
       const nextRunAt = new Date(Date.now() + config.interval_minutes * 60 * 1000);
-      
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
+
+      await db
+        .update(pubonlnSchedulerConfig)
+        .set({
+          last_run_at: new Date(),
           last_run_status: result.success ? 'success' : 'failed',
-          next_run_at: nextRunAt.toISOString(),
-          updated_at: new Date().toISOString(),
+          next_run_at: nextRunAt,
+          updated_at: new Date(),
         })
-        .eq('id', config.id);
+        .where(eq(pubonlnSchedulerConfig.id, config.id));
     }
-    
+
     console.log('[PubonlnScheduler] 定时抓取完成:', result.message);
   } catch (error) {
     console.error('[PubonlnScheduler] 定时抓取失败:', error);
-    
+
     // 更新失败状态
     const config = await getPubonlnSchedulerConfig();
     if (config) {
-      const supabase = getSupabaseClient();
-      await supabase
-        .from(CONFIG_TABLE)
-        .update({
-          last_run_at: new Date().toISOString(),
+      await db
+        .update(pubonlnSchedulerConfig)
+        .set({
+          last_run_at: new Date(),
           last_run_status: 'error',
-          updated_at: new Date().toISOString(),
+          updated_at: new Date(),
         })
-        .eq('id', config.id);
+        .where(eq(pubonlnSchedulerConfig.id, config.id));
     }
   }
 }
@@ -170,16 +151,16 @@ async function startScheduler() {
   }
 
   const intervalMs = config.interval_minutes * 60 * 1000;
-  
+
   console.log(`[PubonlnScheduler] 启动定时任务，间隔: ${config.interval_minutes} 分钟`);
-  
+
   schedulerInterval = setInterval(async () => {
     const currentConfig = await getPubonlnSchedulerConfig();
     if (!currentConfig?.enabled) {
       stopScheduler();
       return;
     }
-    
+
     await executeFetchTask();
   }, intervalMs);
 }
@@ -210,14 +191,14 @@ export async function initPubonlnScheduler() {
   if (isInitialized) {
     return;
   }
-  
+
   console.log('[PubonlnScheduler] 初始化定时任务调度器...');
-  
+
   const config = await getPubonlnSchedulerConfig();
   if (config?.enabled) {
     await startScheduler();
   }
-  
+
   isInitialized = true;
   console.log('[PubonlnScheduler] 调度器初始化完成');
 }
