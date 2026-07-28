@@ -1,12 +1,12 @@
 /**
  * 整合药品数据服务
  * 负责从广东医保和广州采购平台源表抽取数据、合并去重，
- * 并将结果持久化到 merged_drug_info 表。
+ * 并将结果持久化到 drug_info_merged 表。
  * 同时提供合并数据的新表查询和导出服务。
  */
 
 import { db } from '@/storage/database/db';
-import { mergedDrugInfo, drugInfo, pubonlnDrugInfo } from '@/storage/database/shared/schema';
+import { drugInfoMerged, drugInfoGz, drugInfoGd } from '@/storage/database/shared/schema';
 import { and, asc, count, desc, eq, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
 import {
@@ -164,23 +164,23 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
   while (true) {
     const rows = await db
       .select({
-        id: pubonlnDrugInfo.id,
-        genname: pubonlnDrugInfo.genname,
-        drug_code: pubonlnDrugInfo.drug_code,
-        dosform_name: pubonlnDrugInfo.dosform_name,
-        prodentp_name: pubonlnDrugInfo.prodentp_name,
-        reg_spec_name: pubonlnDrugInfo.reg_spec_name,
-        convrat: pubonlnDrugInfo.convrat,
-        minpac_name: pubonlnDrugInfo.minpac_name,
-        minunt_name: pubonlnDrugInfo.minunt_name,
-        drug_select_type: pubonlnDrugInfo.drug_select_type,
-        pubonln_time: pubonlnDrugInfo.pubonln_time,
-        jyl_category: pubonlnDrugInfo.jyl_category,
-        pacmatl: pubonlnDrugInfo.pacmatl,
-        min_pac_pubonln_pric: pubonlnDrugInfo.min_pac_pubonln_pric,
+        id: drugInfoGd.id,
+        genname: drugInfoGd.genname,
+        drug_code: drugInfoGd.drug_code,
+        dosform_name: drugInfoGd.dosform_name,
+        prodentp_name: drugInfoGd.prodentp_name,
+        reg_spec_name: drugInfoGd.reg_spec_name,
+        convrat: drugInfoGd.convrat,
+        minpac_name: drugInfoGd.minpac_name,
+        minunt_name: drugInfoGd.minunt_name,
+        drug_select_type: drugInfoGd.drug_select_type,
+        pubonln_time: drugInfoGd.pubonln_time,
+        jyl_category: drugInfoGd.jyl_category,
+        pacmatl: drugInfoGd.pacmatl,
+        min_pac_pubonln_pric: drugInfoGd.min_pac_pubonln_pric,
       })
-      .from(pubonlnDrugInfo)
-      .orderBy(asc(pubonlnDrugInfo.id))
+      .from(drugInfoGd)
+      .orderBy(asc(drugInfoGd.id))
       .offset(offset)
       .limit(batchSize);
 
@@ -204,24 +204,24 @@ async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
   while (true) {
     const rows = await db
       .select({
-        id: drugInfo.id,
-        product_name: drugInfo.product_name,
-        national_drug_code: drugInfo.national_drug_code,
-        medicinemodel: drugInfo.medicinemodel,
-        company_name_sc: drugInfo.company_name_sc,
-        outlook: drugInfo.outlook,
-        factor: drugInfo.factor,
-        unit: drugInfo.unit,
-        min_unit: drugInfo.min_unit,
-        source_type: drugInfo.source_type,
-        net_time: drugInfo.net_time,
-        medicare_type: drugInfo.medicare_type,
-        material_name: drugInfo.material_name,
-        bid_price: drugInfo.bid_price,
-        min_unit_price: drugInfo.min_unit_price,
+        id: drugInfoGz.id,
+        product_name: drugInfoGz.product_name,
+        national_drug_code: drugInfoGz.national_drug_code,
+        medicinemodel: drugInfoGz.medicinemodel,
+        company_name_sc: drugInfoGz.company_name_sc,
+        outlook: drugInfoGz.outlook,
+        factor: drugInfoGz.factor,
+        unit: drugInfoGz.unit,
+        min_unit: drugInfoGz.min_unit,
+        source_type: drugInfoGz.source_type,
+        net_time: drugInfoGz.net_time,
+        medicare_type: drugInfoGz.medicare_type,
+        material_name: drugInfoGz.material_name,
+        bid_price: drugInfoGz.bid_price,
+        min_unit_price: drugInfoGz.min_unit_price,
       })
-      .from(drugInfo)
-      .orderBy(asc(drugInfo.id))
+      .from(drugInfoGz)
+      .orderBy(asc(drugInfoGz.id))
       .offset(offset)
       .limit(batchSize);
 
@@ -297,44 +297,44 @@ function buildMergedConditions(
   if (keyword) {
     // MySQL 无 ILIKE，使用 LIKE（TiDB 默认 collation 对中文无影响；英文大小写敏感性依赖 collation）
     conditions.push(or(
-      like(mergedDrugInfo.product_name, `%${keyword}%`),
-      like(mergedDrugInfo.company_name, `%${keyword}%`)
+      like(drugInfoMerged.product_name, `%${keyword}%`),
+      like(drugInfoMerged.company_name, `%${keyword}%`)
     ) as SQL);
   }
 
   if (options?.productName) {
-    conditions.push(like(mergedDrugInfo.product_name, `%${decodeURIComponent(options.productName)}%`) as SQL);
+    conditions.push(like(drugInfoMerged.product_name, `%${decodeURIComponent(options.productName)}%`) as SQL);
   }
 
   if (options?.companyName) {
-    conditions.push(like(mergedDrugInfo.company_name, `%${options.companyName}%`) as SQL);
+    conditions.push(like(drugInfoMerged.company_name, `%${options.companyName}%`) as SQL);
   }
 
   if (options?.source) {
-    conditions.push(eq(mergedDrugInfo.source, options.source) as SQL);
+    conditions.push(eq(drugInfoMerged.source, options.source) as SQL);
   }
 
   if (options?.medicareTypeLabel) {
-    conditions.push(eq(mergedDrugInfo.medicare_type_label, options.medicareTypeLabel) as SQL);
+    conditions.push(eq(drugInfoMerged.medicare_type_label, options.medicareTypeLabel) as SQL);
   }
 
   if (options?.nationalDrugCode) {
-    conditions.push(like(mergedDrugInfo.national_drug_code, `%${options.nationalDrugCode}%`) as SQL);
+    conditions.push(like(drugInfoMerged.national_drug_code, `%${options.nationalDrugCode}%`) as SQL);
   }
 
   if (options?.minPacQuantity) {
-    conditions.push(like(mergedDrugInfo.min_pac_quantity, `%${decodeURIComponent(options.minPacQuantity)}%`) as SQL);
+    conditions.push(like(drugInfoMerged.min_pac_quantity, `%${decodeURIComponent(options.minPacQuantity)}%`) as SQL);
   }
 
   if (options?.minMeasureUnit) {
-    conditions.push(like(mergedDrugInfo.min_measure_unit, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
+    conditions.push(like(drugInfoMerged.min_measure_unit, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
 /**
- * 将本地合并且统一字段的数据，写入远程数据库的合并表 `merged_drug_info`
+ * 将本地合并且统一字段的数据，写入远程数据库的合并表 `drug_info_merged`
  */
 export async function syncMergedDrugData(): Promise<{ success: boolean; message: string; error?: string }> {
   try {
@@ -376,7 +376,7 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
 
     updateMergeProgress({ phase: '清空旧合并数据...' });
     // 清空全表（等价于原 .neq('id', 全零UUID) 的清表语义）
-    await db.delete(mergedDrugInfo);
+    await db.delete(drugInfoMerged);
 
     updateMergeProgress({ phase: '正在将合并数据写入新表...' });
     let savedCount = 0;
@@ -384,7 +384,7 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
 
     for (let i = 0; i < recordsToInsert.length; i += insBatchSize) {
       const batch = recordsToInsert.slice(i, i + insBatchSize);
-      await db.insert(mergedDrugInfo).values(batch as never);
+      await db.insert(drugInfoMerged).values(batch as never);
 
       savedCount += batch.length;
       updateMergeProgress({ savedCount });
@@ -403,7 +403,7 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
 // ─── 新表查询与导出服务 ──────────────────────────────────────────────
 
 /**
- * 查询持久化后的整合药品列表（从 merged_drug_info 表读）
+ * 查询持久化后的整合药品列表（从 drug_info_merged 表读）
  *
  * @param options 查询参数
  */
@@ -430,14 +430,14 @@ export async function getMergedDrugList(options?: {
   const [dataRows, countRows] = await Promise.all([
     db
       .select()
-      .from(mergedDrugInfo)
+      .from(drugInfoMerged)
       .where(whereClause)
-      .orderBy(desc(mergedDrugInfo.created_at))
+      .orderBy(desc(drugInfoMerged.created_at))
       .offset(offset)
       .limit(pageSize),
     db
       .select({ count: count() })
-      .from(mergedDrugInfo)
+      .from(drugInfoMerged)
       .where(whereClause),
   ]);
 
@@ -448,7 +448,7 @@ export async function getMergedDrugList(options?: {
 }
 
 /**
- * 导出所有持久化整合药品数据（从 merged_drug_info 表读）
+ * 导出所有持久化整合药品数据（从 drug_info_merged 表读）
  */
 export async function exportMergedDrugData(options?: {
   searchKeyword?: string;
@@ -470,9 +470,9 @@ export async function exportMergedDrugData(options?: {
   while (true) {
     const rows = await db
       .select()
-      .from(mergedDrugInfo)
+      .from(drugInfoMerged)
       .where(whereClause)
-      .orderBy(desc(mergedDrugInfo.created_at))
+      .orderBy(desc(drugInfoMerged.created_at))
       .offset(offset)
       .limit(batchSize);
 

@@ -5,11 +5,11 @@
 
 import { db } from '@/storage/database/db';
 import {
-  unifiedSchedulerConfig,
+  schedulerConfig,
   scrapeLog,
-  drugInfo,
-  pubonlnDrugInfo,
-  mergedDrugInfo,
+  drugInfoGz,
+  drugInfoGd,
+  drugInfoMerged,
 } from '@/storage/database/shared/schema';
 import { eq, desc } from 'drizzle-orm';
 import { scrapeDrugInfo } from './drug-scraper';
@@ -58,8 +58,8 @@ export async function getUnifiedSchedulerConfig(source: DataSource): Promise<Uni
   try {
     const rows = await db
       .select()
-      .from(unifiedSchedulerConfig)
-      .where(eq(unifiedSchedulerConfig.source, source))
+      .from(schedulerConfig)
+      .where(eq(schedulerConfig.source, source))
       .limit(1);
 
     if (rows.length > 0) {
@@ -68,7 +68,7 @@ export async function getUnifiedSchedulerConfig(source: DataSource): Promise<Uni
 
     // 没有记录，创建默认配置。优先复用环境变量 CRON_SECRET（与 Vercel Cron 鉴权一致），否则生成密码学安全随机值
     const cronSecret = process.env.CRON_SECRET || crypto.randomUUID();
-    const insertResult = await db.insert(unifiedSchedulerConfig).values({
+    const insertResult = await db.insert(schedulerConfig).values({
       source,
       enabled: false,
       interval_minutes: 60,
@@ -81,8 +81,8 @@ export async function getUnifiedSchedulerConfig(source: DataSource): Promise<Uni
     if (!newConfigId) return null;
     const newRows = await db
       .select()
-      .from(unifiedSchedulerConfig)
-      .where(eq(unifiedSchedulerConfig.id, newConfigId))
+      .from(schedulerConfig)
+      .where(eq(schedulerConfig.id, newConfigId))
       .limit(1);
 
     return (newRows[0] as unknown as UnifiedSchedulerConfig) ?? null;
@@ -130,16 +130,16 @@ export async function updateUnifiedSchedulerConfig(
     }
 
     await db
-      .update(unifiedSchedulerConfig)
+      .update(schedulerConfig)
       .set(updateData)
-      .where(eq(unifiedSchedulerConfig.id, currentConfig.id));
+      .where(eq(schedulerConfig.id, currentConfig.id));
 
     // 已移除对 restartUnifiedScheduler 的调用，依靠外部 Cron 定期拉取最新状态
     // MySQL 不支持 RETURNING，回查更新后的配置
     const updatedRows = await db
       .select()
-      .from(unifiedSchedulerConfig)
-      .where(eq(unifiedSchedulerConfig.id, currentConfig.id))
+      .from(schedulerConfig)
+      .where(eq(schedulerConfig.id, currentConfig.id))
       .limit(1);
 
     return (updatedRows[0] as unknown as UnifiedSchedulerConfig) ?? null;
@@ -177,12 +177,12 @@ export async function setRunningStatus(
   if (!config) return;
 
   await db
-    .update(unifiedSchedulerConfig)
+    .update(schedulerConfig)
     .set({
       running_status: status,
       updated_at: new Date(),
     })
-    .where(eq(unifiedSchedulerConfig.id, config.id));
+    .where(eq(schedulerConfig.id, config.id));
 }
 
 /**
@@ -212,9 +212,9 @@ export async function finalizeScrapeRun(
   }
 
   await db
-    .update(unifiedSchedulerConfig)
+    .update(schedulerConfig)
     .set(updateData)
-    .where(eq(unifiedSchedulerConfig.id, config.id));
+    .where(eq(schedulerConfig.id, config.id));
 }
 
 /**
@@ -323,27 +323,27 @@ export async function getLatestDataTime(source: DataSource): Promise<string | nu
   try {
     if (source === 'gz_drug') {
       const rows = await db
-        .select({ created_at: drugInfo.created_at })
-        .from(drugInfo)
-        .orderBy(desc(drugInfo.created_at))
+        .select({ created_at: drugInfoGz.created_at })
+        .from(drugInfoGz)
+        .orderBy(desc(drugInfoGz.created_at))
         .limit(1);
       return (rows[0]?.created_at as unknown as string) ?? null;
     }
 
     if (source === 'gd_pubonln') {
       const rows = await db
-        .select({ created_at: pubonlnDrugInfo.created_at })
-        .from(pubonlnDrugInfo)
-        .orderBy(desc(pubonlnDrugInfo.created_at))
+        .select({ created_at: drugInfoGd.created_at })
+        .from(drugInfoGd)
+        .orderBy(desc(drugInfoGd.created_at))
         .limit(1);
       return (rows[0]?.created_at as unknown as string) ?? null;
     }
 
     if (source === 'merged_drug') {
       const rows = await db
-        .select({ synced_at: mergedDrugInfo.synced_at })
-        .from(mergedDrugInfo)
-        .orderBy(desc(mergedDrugInfo.synced_at))
+        .select({ synced_at: drugInfoMerged.synced_at })
+        .from(drugInfoMerged)
+        .orderBy(desc(drugInfoMerged.synced_at))
         .limit(1);
       return (rows[0]?.synced_at as unknown as string) ?? null;
     }

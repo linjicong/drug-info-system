@@ -4,7 +4,7 @@ import { getUnifiedSchedulerConfig } from '@/lib/unified-scheduler';
 
 /**
  * 可以通过 cron jobs 每天调用一次，或者手动触发
- * 鉴权方式：从数据库 unified_scheduler_config 表读取 cron_secret 进行校验
+ * 鉴权方式：从数据库 scheduler_config 表读取 cron_secret 进行校验
  */
 export async function POST(request: NextRequest) {
   try {

@@ -55,13 +55,11 @@ interface TableMigration {
 const TABLES: TableMigration[] = [
   { name: 'health_check', supabaseTable: 'health_check', schemaTable: schema.healthCheck },
   { name: 'scheduler_config', supabaseTable: 'scheduler_config', schemaTable: schema.schedulerConfig },
-  { name: 'pubonln_scheduler_config', supabaseTable: 'pubonln_scheduler_config', schemaTable: schema.pubonlnSchedulerConfig },
-  { name: 'unified_scheduler_config', supabaseTable: 'unified_scheduler_config', schemaTable: schema.unifiedSchedulerConfig },
   { name: 'scrape_log', supabaseTable: 'scrape_log', schemaTable: schema.scrapeLog },
-  { name: 'drug_info', supabaseTable: 'drug_info', schemaTable: schema.drugInfo },
-  { name: 'pubonln_drug_info', supabaseTable: 'pubonln_drug_info', schemaTable: schema.pubonlnDrugInfo },
+  { name: 'drug_info', supabaseTable: 'drug_info', schemaTable: schema.drugInfoGz },
+  { name: 'pubonln_drug_info', supabaseTable: 'pubonln_drug_info', schemaTable: schema.drugInfoGd },
   { name: 'user_tracked_drugs', supabaseTable: 'user_tracked_drugs', schemaTable: schema.userTrackedDrugs },
-  { name: 'merged_drug_info', supabaseTable: 'merged_drug_info', schemaTable: schema.mergedDrugInfo },
+  { name: 'drug_info_merged', supabaseTable: 'drug_info_merged', schemaTable: schema.drugInfoMerged },
   { name: 'drug_daily_ledgers', supabaseTable: 'drug_daily_ledgers', schemaTable: schema.drugDailyLedgers },
 ];
 

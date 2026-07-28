@@ -1,5 +1,5 @@
 /**
- * 一次性：查看 TiDB 迁移后 unified_scheduler_config 调度配置状态。仅读。
+ * 一次性：查看 TiDB 迁移后 scheduler_config 调度配置状态。仅读。
  */
 import { db } from '../src/storage/database/db';
 import { sql } from 'drizzle-orm';
@@ -14,7 +14,7 @@ function extractRows(result: unknown): Record<string, unknown>[] {
 
 async function main() {
   const res = await db.execute(
-    sql.raw('SELECT source, enabled, interval_minutes, next_run_at, last_run_status FROM unified_scheduler_config ORDER BY source')
+    sql.raw('SELECT source, enabled, interval_minutes, next_run_at, last_run_status FROM scheduler_config ORDER BY source')
   );
   console.log('调度配置：');
   for (const r of extractRows(res)) {

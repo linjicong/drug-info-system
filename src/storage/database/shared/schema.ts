@@ -8,7 +8,7 @@ export const healthCheck = mysqlTable("health_check", {
 });
 
 // 统一的调度器配置表（支持多数据源）
-export const unifiedSchedulerConfig = mysqlTable("unified_scheduler_config", {
+export const schedulerConfig = mysqlTable("scheduler_config", {
 	id: serial().notNull().primaryKey(),
   
   // 数据源标识：'gz_drug' 或 'gd_pubonln'
@@ -84,32 +84,9 @@ export const scrapeLog = mysqlTable(
   ]
 );
 
-// 定时任务配置表（保留兼容）
-export const schedulerConfig = mysqlTable("scheduler_config", {
-	id: serial().notNull().primaryKey(),
-  
-  // 是否启用定时抓取
-  enabled: boolean("enabled").default(false).notNull(),
-  
-  // 抓取间隔（分钟）
-  interval_minutes: int("interval_minutes").default(60).notNull(),
-  
-  // 下次执行时间
-  next_run_at: datetime("next_run_at"),
-  
-  // 上次执行时间
-  last_run_at: datetime("last_run_at"),
-  
-  // 上次执行状态
-  last_run_status: varchar("last_run_status", { length: 50 }),
-  
-  // 更新时间
-  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
-
 // 挂网药品信息表 - 广东医保服务平台挂网公示
-export const pubonlnDrugInfo = mysqlTable(
-  "pubonln_drug_info",
+export const drugInfoGd = mysqlTable(
+  "drug_info_gd",
   {
     id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
@@ -238,16 +215,16 @@ export const pubonlnDrugInfo = mysqlTable(
     updated_at: datetime("updated_at"),
   },
   (table) => [
-    index("idx_pubonln_drug_info_genname").on(table.genname),
-    index("idx_pubonln_drug_info_listing_license_holder").on(table.listing_license_holder),
-    index("idx_pubonln_drug_info_drug_code").on(table.drug_code),
+    index("idx_drug_info_gd_genname").on(table.genname),
+    index("idx_drug_info_gd_listing_license_holder").on(table.listing_license_holder),
+    index("idx_drug_info_gd_drug_code").on(table.drug_code),
   ]
 );
 
 // 药品信息表 - 完全匹配API返回字段（共23个API字段）
 // 字段说明参考广州药品采购平台 API 返回
-export const drugInfo = mysqlTable(
-  "drug_info",
+export const drugInfoGz = mysqlTable(
+  "drug_info_gz",
   {
     id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     
@@ -340,9 +317,9 @@ export const drugInfo = mysqlTable(
     updated_at: datetime("updated_at"),
   },
   (table) => [
-    index("idx_drug_info_product_name").on(table.product_name),
-    index("idx_drug_info_company_name").on(table.company_name_sc),
-    index("idx_drug_info_source_type").on(table.source_type),
+    index("idx_drug_info_gz_product_name").on(table.product_name),
+    index("idx_drug_info_gz_company_name").on(table.company_name_sc),
+    index("idx_drug_info_gz_source_type").on(table.source_type),
   ]
 );
 
@@ -441,8 +418,8 @@ export const drugDailyLedgers = mysqlTable(
 // ============ 整合药品数据表 ============
 
 // 合并去重后的药品信息表（由 merged-drug-service 同步生成）
-export const mergedDrugInfo = mysqlTable(
-  "merged_drug_info",
+export const drugInfoMerged = mysqlTable(
+  "drug_info_merged",
   {
     id: varchar("id", { length: 36 }).primaryKey().default(sql`UUID()`),
     source: varchar("source", { length: 50 }),
@@ -465,19 +442,7 @@ export const mergedDrugInfo = mysqlTable(
     synced_at: datetime("synced_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   },
   (table) => [
-    index("idx_merged_drug_info_product_name").on(table.product_name),
-    index("idx_merged_drug_info_source").on(table.source),
+    index("idx_drug_info_merged_product_name").on(table.product_name),
+    index("idx_drug_info_merged_source").on(table.source),
   ]
 );
-
-// ============ 广东医保挂网调度器配置表（保留兼容） ============
-
-export const pubonlnSchedulerConfig = mysqlTable("pubonln_scheduler_config", {
-  id: serial().notNull().primaryKey(),
-  enabled: boolean("enabled").default(false).notNull(),
-  interval_minutes: int("interval_minutes").default(60).notNull(),
-  next_run_at: datetime("next_run_at"),
-  last_run_at: datetime("last_run_at"),
-  last_run_status: varchar("last_run_status", { length: 50 }),
-  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});

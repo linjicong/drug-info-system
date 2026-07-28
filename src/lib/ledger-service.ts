@@ -1,5 +1,5 @@
 import { db } from '@/storage/database/db';
-import { userTrackedDrugs, drugDailyLedgers, mergedDrugInfo } from '@/storage/database/shared/schema';
+import { userTrackedDrugs, drugDailyLedgers, drugInfoMerged } from '@/storage/database/shared/schema';
 import { and, asc, count, desc, eq, gte, inArray, like, lte, or, type SQL } from 'drizzle-orm';
 
 function normalizeQueryText(value?: string): string | undefined {
@@ -139,20 +139,20 @@ export async function getTrackedDrugs(options?: {
   };
 
   const mergedSelectFields = {
-    id: mergedDrugInfo.id,
-    product_name: mergedDrugInfo.product_name,
-    national_drug_code: mergedDrugInfo.national_drug_code,
-    company_name: mergedDrugInfo.company_name,
-    min_pac_quantity: mergedDrugInfo.min_pac_quantity,
-    min_measure_unit: mergedDrugInfo.min_measure_unit,
+    id: drugInfoMerged.id,
+    product_name: drugInfoMerged.product_name,
+    national_drug_code: drugInfoMerged.national_drug_code,
+    company_name: drugInfoMerged.company_name,
+    min_pac_quantity: drugInfoMerged.min_pac_quantity,
+    min_measure_unit: drugInfoMerged.min_measure_unit,
   };
 
   if (productNames.length > 0) {
     for (const chunk of chunkArray(productNames, CONDITION_CHUNK_SIZE)) {
       const rows = await db
         .select(mergedSelectFields)
-        .from(mergedDrugInfo)
-        .where(inArray(mergedDrugInfo.product_name, chunk));
+        .from(drugInfoMerged)
+        .where(inArray(drugInfoMerged.product_name, chunk));
       upsertMergedRows(rows as any[]);
     }
   }
@@ -161,8 +161,8 @@ export async function getTrackedDrugs(options?: {
     for (const chunk of chunkArray(drugCodes, CONDITION_CHUNK_SIZE)) {
       const rows = await db
         .select(mergedSelectFields)
-        .from(mergedDrugInfo)
-        .where(inArray(mergedDrugInfo.national_drug_code, chunk));
+        .from(drugInfoMerged)
+        .where(inArray(drugInfoMerged.national_drug_code, chunk));
       upsertMergedRows(rows as any[]);
     }
   }
@@ -494,7 +494,7 @@ export async function getDailyLedgersByDates(
 
 /**
  * 调度执行台账合并同步：
- * 将用户追踪的配置应用到 merged_drug_info（汇总表），
+ * 将用户追踪的配置应用到 drug_info_merged（汇总表），
  * 生成今天的快照写入 drug_daily_ledgers。
  */
 export async function executeLedgerSnapshot() {
@@ -514,10 +514,10 @@ export async function executeLedgerSnapshot() {
     day: '2-digit',
   }).format(new Date());
 
-  // 3. 开始映射：为每个追踪药品，去 merged_drug_info 获取最新数据
+  // 3. 开始映射：为每个追踪药品，去 drug_info_merged 获取最新数据
   const ledgersToInsert: any[] = [];
 
-  // 批量查询优化：收集所有追踪药品的关键字段，一次性查询 merged_drug_info，避免 N+1 问题
+  // 批量查询优化：收集所有追踪药品的关键字段，一次性查询 drug_info_merged，避免 N+1 问题
   const productNames = [...new Set(
     trackedDrugs.map(t => t.product_name?.trim()).filter(Boolean) as string[]
   )];
@@ -539,9 +539,9 @@ export async function executeLedgerSnapshot() {
     while (hasMore) {
       const batchData = await db
         .select()
-        .from(mergedDrugInfo)
+        .from(drugInfoMerged)
         .where(inArray(
-          field === 'product_name' ? mergedDrugInfo.product_name : mergedDrugInfo.national_drug_code,
+          field === 'product_name' ? drugInfoMerged.product_name : drugInfoMerged.national_drug_code,
           values
         ))
         .offset(queryOffset)

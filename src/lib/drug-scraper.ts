@@ -1,5 +1,5 @@
 import { db } from '@/storage/database/db';
-import { drugInfo } from '@/storage/database/shared/schema';
+import { drugInfoGz } from '@/storage/database/shared/schema';
 import { and, count, desc, eq, isNotNull, like, or, type SQL } from 'drizzle-orm';
 import https from 'https';
 import { getDrugApiConfig, buildRequestOptions } from './api-config';
@@ -203,33 +203,33 @@ function buildDrugConditions(options?: {
   if (options?.searchKeyword) {
     const keyword = decodeURIComponent(options.searchKeyword);
     conditions.push(or(
-      like(drugInfo.product_name, `%${keyword}%`),
-      like(drugInfo.goods_name, `%${keyword}%`),
-      like(drugInfo.company_name_sc, `%${keyword}%`)
+      like(drugInfoGz.product_name, `%${keyword}%`),
+      like(drugInfoGz.goods_name, `%${keyword}%`),
+      like(drugInfoGz.company_name_sc, `%${keyword}%`)
     ) as SQL);
   }
 
   if (options?.productName) {
-    conditions.push(like(drugInfo.product_name, `%${decodeURIComponent(options.productName)}%`) as SQL);
+    conditions.push(like(drugInfoGz.product_name, `%${decodeURIComponent(options.productName)}%`) as SQL);
   }
 
   if (options?.companyName) {
-    conditions.push(like(drugInfo.company_name_sc, `%${decodeURIComponent(options.companyName)}%`) as SQL);
+    conditions.push(like(drugInfoGz.company_name_sc, `%${decodeURIComponent(options.companyName)}%`) as SQL);
   }
 
   if (options?.nationalDrugCode) {
-    conditions.push(like(drugInfo.national_drug_code, `%${decodeURIComponent(options.nationalDrugCode)}%`) as SQL);
+    conditions.push(like(drugInfoGz.national_drug_code, `%${decodeURIComponent(options.nationalDrugCode)}%`) as SQL);
   }
 
   if (options?.minPacQuantity) {
     const quantityNumber = Number(options.minPacQuantity);
     if (!Number.isNaN(quantityNumber)) {
-      conditions.push(eq(drugInfo.factor, quantityNumber) as SQL);
+      conditions.push(eq(drugInfoGz.factor, quantityNumber) as SQL);
     }
   }
 
   if (options?.minMeasureUnit) {
-    conditions.push(like(drugInfo.min_unit, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
+    conditions.push(like(drugInfoGz.min_unit, `%${decodeURIComponent(options.minMeasureUnit)}%`) as SQL);
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -240,7 +240,7 @@ function buildDrugConditions(options?: {
  */
 async function clearDrugTable(): Promise<void> {
   // 清空全表（等价于原 .not('id','is',null) 的清表语义）
-  await db.delete(drugInfo);
+  await db.delete(drugInfoGz);
   console.log('[DrugScraper] 已清空旧数据');
 }
 
@@ -615,7 +615,7 @@ async function saveDrugBatchToDatabase(drugList: DrugInfo[]): Promise<void> {
   console.log(`[DrugScraper] 准备插入 ${recordsToInsert.length} 条数据`);
 
   try {
-    await db.insert(drugInfo).values(recordsToInsert as never);
+    await db.insert(drugInfoGz).values(recordsToInsert as never);
     globalNewCount += drugList.length;
     console.log(`[DrugScraper] 批量插入成功: ${drugList.length} 条`);
   } catch (error) {
@@ -624,7 +624,7 @@ async function saveDrugBatchToDatabase(drugList: DrugInfo[]): Promise<void> {
     let successCount = 0;
     for (const drug of recordsToInsert) {
       try {
-        await db.insert(drugInfo).values(drug as never);
+        await db.insert(drugInfoGz).values(drug as never);
         successCount++;
       } catch {
         // 忽略单条失败
@@ -658,14 +658,14 @@ export async function getDrugList(options?: {
   const [dataRows, countRows] = await Promise.all([
     db
       .select()
-      .from(drugInfo)
+      .from(drugInfoGz)
       .where(whereClause)
-      .orderBy(desc(drugInfo.created_at))
+      .orderBy(desc(drugInfoGz.created_at))
       .offset(offset)
       .limit(pageSize),
     db
       .select({ count: count() })
-      .from(drugInfo)
+      .from(drugInfoGz)
       .where(whereClause),
   ]);
 
@@ -696,9 +696,9 @@ export async function exportDrugData(options?: {
   while (hasMore) {
     const rows = await db
       .select()
-      .from(drugInfo)
+      .from(drugInfoGz)
       .where(whereClause)
-      .orderBy(desc(drugInfo.created_at))
+      .orderBy(desc(drugInfoGz.created_at))
       .offset(offset)
       .limit(batchSize);
 
@@ -722,15 +722,15 @@ export async function getStatistics(): Promise<{
   total: number;
   lastUpdate: string | null;
 }> {
-  const countRows = await db.select({ count: count() }).from(drugInfo);
+  const countRows = await db.select({ count: count() }).from(drugInfoGz);
   const total = Number(countRows[0]?.count ?? 0);
 
   // 获取最后更新时间
   const lastRows = await db
-    .select({ updated_at: drugInfo.updated_at })
-    .from(drugInfo)
-    .where(isNotNull(drugInfo.updated_at))
-    .orderBy(desc(drugInfo.updated_at))
+    .select({ updated_at: drugInfoGz.updated_at })
+    .from(drugInfoGz)
+    .where(isNotNull(drugInfoGz.updated_at))
+    .orderBy(desc(drugInfoGz.updated_at))
     .limit(1);
 
   return {
@@ -744,9 +744,9 @@ export async function getStatistics(): Promise<{
  */
 export async function getManufacturers(): Promise<string[]> {
   const rows = await db
-    .select({ company_name_sc: drugInfo.company_name_sc })
-    .from(drugInfo)
-    .where(isNotNull(drugInfo.company_name_sc));
+    .select({ company_name_sc: drugInfoGz.company_name_sc })
+    .from(drugInfoGz)
+    .where(isNotNull(drugInfoGz.company_name_sc));
 
   // 去重并排序
   const manufacturers = [...new Set(rows.map(r => r.company_name_sc).filter(Boolean))] as string[];
