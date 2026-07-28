@@ -3,6 +3,9 @@ import { drugInfoGz } from '@/storage/database/shared/schema';
 import { and, count, desc, eq, isNotNull, like, or, type SQL } from 'drizzle-orm';
 import https from 'https';
 import { getDrugApiConfig, buildRequestOptions } from './api-config';
+import { httpsPost } from './shared/http';
+import { parseNumber } from './shared/parse';
+import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import { updateProgress, startProgress, completeProgress, setErrorProgress, resetProgress } from './progress-manager';
 import { batchFetchWithConcurrency } from './drug-detail-worker';
 import { promisePool } from './concurrent-pool';
@@ -139,24 +142,6 @@ interface ApiDrugItem {
   fsRate?: number | string;
 }
 
-/**
- * 使用 Node.js https 模块发起请求
- */
-function httpsPost(options: https.RequestOptions, postData: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      // 设置编码为 utf8，避免多字节字符被截断
-      res.setEncoding('utf8');
-      let body = '';
-      res.on('data', (chunk) => (body += chunk));
-      res.on('end', () => resolve(body));
-    });
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
-}
-
 // 全局统计计数器
 let globalNewCount = 0;
 let globalUpdateCount = 0;
@@ -175,16 +160,13 @@ export function resetScraperProgress(): void {
 /**
  * 规整查询返回行：decimal 字段转 number（drizzle decimal 返回 string，原 Supabase numeric 返回 number）
  */
-export function normalizeDrugRow(row: Record<string, unknown>): DrugInfo {
-  return {
-    ...row,
-    outlook_unit: row.outlook_unit != null ? Number(row.outlook_unit) : undefined,
-    bid_price: row.bid_price != null ? Number(row.bid_price) : undefined,
-    min_unit_price: row.min_unit_price != null ? Number(row.min_unit_price) : undefined,
-    max_listing_price: row.max_listing_price != null ? Number(row.max_listing_price) : undefined,
-    fs_rate: row.fs_rate != null ? Number(row.fs_rate) : undefined,
-  } as DrugInfo;
-}
+export const normalizeDrugRow = createRowNormalizer<DrugInfo>([
+  'outlook_unit',
+  'bid_price',
+  'min_unit_price',
+  'max_listing_price',
+  'fs_rate',
+]);
 
 /**
  * 构建药品列表查询的动态筛选条件
@@ -563,42 +545,6 @@ async function batchFetchDrugDetailTimes(
 }
 
 /**
- * 解析数字 - 处理各种类型的输入
- */
-function parseNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-
-  // 如果是数字，直接返回
-  if (typeof value === 'number') return value;
-
-  // 如果是字符串，尝试解析
-  if (typeof value === 'string') {
-    // 清理字符串，移除可能的非数字字符（除了小数点和负号）
-    const cleaned = value.replace(/[^\d.-]/g, '');
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? undefined : num;
-  }
-
-  // 如果是对象（例如 {68800 -4 false finite true}），尝试提取数字
-  if (typeof value === 'object') {
-    const objStr = JSON.stringify(value);
-    // 提取第一个数字
-    const match = objStr.match(/(\d+)/);
-    if (match) {
-      const num = parseInt(match[1], 10);
-      // 检查是否是金额（通常以分为单位，需要转换为元）
-      if (num >= 100) {
-        return num / 100; // 转换为元
-      }
-      return num;
-    }
-    return undefined;
-  }
-
-  return undefined;
-}
-
-/**
  * 保存单页药品数据到数据库
  */
 async function saveDrugBatchToDatabase(drugList: DrugInfo[]): Promise<void> {
@@ -650,29 +596,15 @@ export async function getDrugList(options?: {
 }): Promise<{ data: DrugInfo[]; total: number }> {
   const page = options?.page || 1;
   const pageSize = options?.pageSize || 20;
-  const offset = (page - 1) * pageSize;
 
-  const whereClause = buildDrugConditions(options);
-
-  // 并行查询数据与总数
-  const [dataRows, countRows] = await Promise.all([
-    db
-      .select()
-      .from(drugInfoGz)
-      .where(whereClause)
-      .orderBy(desc(drugInfoGz.created_at))
-      .offset(offset)
-      .limit(pageSize),
-    db
-      .select({ count: count() })
-      .from(drugInfoGz)
-      .where(whereClause),
-  ]);
-
-  return {
-    data: dataRows.map(row => normalizeDrugRow(row as unknown as Record<string, unknown>)),
-    total: Number(countRows[0]?.count ?? 0),
-  };
+  return getPagedList<DrugInfo>({
+    table: drugInfoGz,
+    where: buildDrugConditions(options),
+    orderBy: desc(drugInfoGz.created_at),
+    page,
+    pageSize,
+    normalizeRow: normalizeDrugRow,
+  });
 }
 
 /**
@@ -686,30 +618,12 @@ export async function exportDrugData(options?: {
   minPacQuantity?: string;
   minMeasureUnit?: string;
 }): Promise<DrugInfo[]> {
-  const whereClause = buildDrugConditions(options);
-  const allData: DrugInfo[] = [];
-  const batchSize = 1000;
-  let offset = 0;
-  let hasMore = true;
-
-  // 分批获取所有数据
-  while (hasMore) {
-    const rows = await db
-      .select()
-      .from(drugInfoGz)
-      .where(whereClause)
-      .orderBy(desc(drugInfoGz.created_at))
-      .offset(offset)
-      .limit(batchSize);
-
-    if (rows.length > 0) {
-      allData.push(...rows.map(row => normalizeDrugRow(row as unknown as Record<string, unknown>)));
-      offset += batchSize;
-      hasMore = rows.length === batchSize;
-    } else {
-      hasMore = false;
-    }
-  }
+  const allData = await fetchAllInBatches<DrugInfo>({
+    table: drugInfoGz,
+    where: buildDrugConditions(options),
+    orderBy: desc(drugInfoGz.created_at),
+    normalizeRow: normalizeDrugRow,
+  });
 
   console.log(`[DrugScraper] 导出数据: ${allData.length} 条`);
   return allData;

@@ -1,8 +1,11 @@
 /**
  * 整合药品数据同步进度管理器
  * 独立于 GD/GZ 两个模块的进度状态，避免互相干扰
- * 使用内存存储，支持前端 1 秒轮询获取进度
+ * 进度状态经 createProgressStore 存于 globalThis（键名 __mergedProgressState__ 保持不变），
+ * 支持前端 1 秒轮询获取进度
  */
+
+import { createProgressStore } from './shared/progress-store';
 
 /** 合并同步进度状态 */
 export interface MergeProgress {
@@ -38,26 +41,7 @@ const createIdleMergeProgress = (): MergeProgress => ({
   error: null,
 });
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __mergedProgressState__: MergeProgress | undefined;
-}
-
-// 使用 globalThis 保存，避免 Next.js dev 热重载导致模块内变量重置
-const globalStore = globalThis as typeof globalThis & {
-  __mergedProgressState__?: MergeProgress;
-};
-
-function getCurrentMergeProgressRef(): MergeProgress {
-  if (!globalStore.__mergedProgressState__) {
-    globalStore.__mergedProgressState__ = createIdleMergeProgress();
-  }
-  return globalStore.__mergedProgressState__;
-}
-
-function setCurrentMergeProgress(next: MergeProgress): void {
-  globalStore.__mergedProgressState__ = next;
-}
+const store = createProgressStore<MergeProgress>('__mergedProgressState__', createIdleMergeProgress);
 
 // ─── 公共 API ────────────────────────────────────────────────────
 
@@ -65,22 +49,21 @@ function setCurrentMergeProgress(next: MergeProgress): void {
  * 获取当前合并同步进度（返回副本，防止外部修改）
  */
 export function getMergeProgress(): MergeProgress {
-  return { ...getCurrentMergeProgressRef() };
+  return { ...store.ref() };
 }
 
 /**
  * 更新合并进度（部分字段）
  */
 export function updateMergeProgress(updates: Partial<MergeProgress>): void {
-  const current = getCurrentMergeProgressRef();
-  setCurrentMergeProgress({ ...current, ...updates });
+  store.set({ ...store.ref(), ...updates });
 }
 
 /**
  * 开始合并任务，重置所有计数
  */
 export function startMergeProgress(): void {
-  setCurrentMergeProgress({
+  store.set({
     status: 'running',
     phase: '正在准备数据...',
     gdLoaded: 0,
@@ -97,9 +80,8 @@ export function startMergeProgress(): void {
  * 标记合并任务完成
  */
 export function completeMergeProgress(): void {
-  const current = getCurrentMergeProgressRef();
-  setCurrentMergeProgress({
-    ...current,
+  store.set({
+    ...store.ref(),
     status: 'completed',
     phase: '合并完成',
     endTime: Date.now(),
@@ -110,9 +92,8 @@ export function completeMergeProgress(): void {
  * 标记合并任务失败
  */
 export function setMergeProgressError(error: string): void {
-  const current = getCurrentMergeProgressRef();
-  setCurrentMergeProgress({
-    ...current,
+  store.set({
+    ...store.ref(),
     status: 'error',
     phase: '合并失败',
     error,
@@ -124,12 +105,12 @@ export function setMergeProgressError(error: string): void {
  * 重置进度为初始 idle 状态
  */
 export function resetMergeProgress(): void {
-  setCurrentMergeProgress(createIdleMergeProgress());
+  store.reset();
 }
 
 /**
  * 判断当前是否正在运行（防止重复触发）
  */
 export function isMergingRunning(): boolean {
-  return getCurrentMergeProgressRef().status === 'running';
+  return store.ref().status === 'running';
 }

@@ -7,8 +7,9 @@
 
 import { db } from '@/storage/database/db';
 import { drugInfoMerged, drugInfoGz, drugInfoGd } from '@/storage/database/shared/schema';
-import { and, asc, count, desc, eq, like, or, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
+import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import {
   startMergeProgress,
   updateMergeProgress,
@@ -142,14 +143,10 @@ function mapGzRow(row: GzDrugRow): Omit<MergedDrugInfo, 'id'> {
 /**
  * 规整查询返回的合并行：decimal 字段转 number，保持前端类型一致
  */
-export function normalizeMergedRow(row: Record<string, unknown>): MergedDrugInfo {
-  return {
-    ...row,
-    gd_price: row.gd_price != null ? Number(row.gd_price) : null,
-    gz_bid_price: row.gz_bid_price != null ? Number(row.gz_bid_price) : null,
-    gz_min_unit_price: row.gz_min_unit_price != null ? Number(row.gz_min_unit_price) : null,
-  } as MergedDrugInfo;
-}
+export const normalizeMergedRow = createRowNormalizer<MergedDrugInfo>(
+  ['gd_price', 'gz_bid_price', 'gz_min_unit_price'],
+  { emptyValue: null },
+);
 
 // ─── 核心同步与合并逻辑 ──────────────────────────────────────────────
 
@@ -421,30 +418,16 @@ export async function getMergedDrugList(options?: {
 }): Promise<{ data: MergedDrugInfo[]; total: number }> {
   const page = options?.page || 1;
   const pageSize = options?.pageSize || 20;
-  const offset = (page - 1) * pageSize;
   const keyword = options?.searchKeyword ? decodeURIComponent(options.searchKeyword) : undefined;
 
-  const whereClause = buildMergedConditions(options, keyword);
-
-  // 并行查询数据与总数
-  const [dataRows, countRows] = await Promise.all([
-    db
-      .select()
-      .from(drugInfoMerged)
-      .where(whereClause)
-      .orderBy(desc(drugInfoMerged.created_at))
-      .offset(offset)
-      .limit(pageSize),
-    db
-      .select({ count: count() })
-      .from(drugInfoMerged)
-      .where(whereClause),
-  ]);
-
-  return {
-    data: dataRows.map(row => normalizeMergedRow(row as unknown as Record<string, unknown>)),
-    total: Number(countRows[0]?.count ?? 0),
-  };
+  return getPagedList<MergedDrugInfo>({
+    table: drugInfoMerged,
+    where: buildMergedConditions(options, keyword),
+    orderBy: desc(drugInfoMerged.created_at),
+    page,
+    pageSize,
+    normalizeRow: normalizeMergedRow,
+  });
 }
 
 /**
@@ -461,27 +444,13 @@ export async function exportMergedDrugData(options?: {
   minMeasureUnit?: string;
 }): Promise<MergedDrugInfo[]> {
   const keyword = options?.searchKeyword ? decodeURIComponent(options.searchKeyword) : undefined;
-  const whereClause = buildMergedConditions(options, keyword);
 
-  let allData: MergedDrugInfo[] = [];
-  let offset = 0;
-  const batchSize = 1000;
-
-  while (true) {
-    const rows = await db
-      .select()
-      .from(drugInfoMerged)
-      .where(whereClause)
-      .orderBy(desc(drugInfoMerged.created_at))
-      .offset(offset)
-      .limit(batchSize);
-
-    if (rows.length === 0) break;
-
-    allData = allData.concat(rows.map(row => normalizeMergedRow(row as unknown as Record<string, unknown>)));
-    offset += batchSize;
-    if (rows.length < batchSize) break;
-  }
+  const allData = await fetchAllInBatches<MergedDrugInfo>({
+    table: drugInfoMerged,
+    where: buildMergedConditions(options, keyword),
+    orderBy: desc(drugInfoMerged.created_at),
+    normalizeRow: normalizeMergedRow,
+  });
 
   console.log(`[MergedDrugService] 导出数据: ${allData.length} 条`);
   return allData;

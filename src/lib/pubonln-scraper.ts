@@ -8,6 +8,9 @@ import { drugInfoGd } from '@/storage/database/shared/schema';
 import { and, count, desc, isNotNull, like, or, type SQL } from 'drizzle-orm';
 import https from 'https';
 import { getPubonlnApiConfig, buildRequestOptions } from './api-config';
+import { httpsPost } from './shared/http';
+import { parseNumber, parseInteger } from './shared/parse';
+import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import { promisePool } from './concurrent-pool';
 import {
   updateProgress,
@@ -162,24 +165,6 @@ interface PubonlnApiDrugItem {
   remark?: string;
 }
 
-/**
- * 使用 Node.js https 模块发起请求
- */
-function httpsPost(options: https.RequestOptions, postData: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      // 设置编码为 utf8，避免多字节字符被截断
-      res.setEncoding('utf8');
-      let body = '';
-      res.on('data', (chunk) => (body += chunk));
-      res.on('end', () => resolve(body));
-    });
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
-}
-
 // 全局统计计数器
 let globalNewCount = 0;
 let globalTotalProcessed = 0;
@@ -187,12 +172,7 @@ let globalTotalProcessed = 0;
 /**
  * 规整查询返回行：decimal 字段转 number（drizzle decimal 返回 string，原 Supabase numeric 返回 number）
  */
-export function normalizePubonlnRow(row: Record<string, unknown>): PubonlnDrugInfo {
-  return {
-    ...row,
-    min_pac_pubonln_pric: row.min_pac_pubonln_pric != null ? Number(row.min_pac_pubonln_pric) : undefined,
-  } as PubonlnDrugInfo;
-}
+export const normalizePubonlnRow = createRowNormalizer<PubonlnDrugInfo>(['min_pac_pubonln_pric']);
 
 /**
  * 构建挂网药品列表查询的动态筛选条件
@@ -464,51 +444,6 @@ async function fetchPubonlnDrugPage(
 }
 
 /**
- * 解析数字 - 处理各种类型的输入
- */
-function parseNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-
-  // 如果是数字，直接返回
-  if (typeof value === 'number') return value;
-
-  // 如果是字符串，尝试解析
-  if (typeof value === 'string') {
-    // 清理字符串，移除可能的非数字字符（除了小数点和负号）
-    const cleaned = value.replace(/[^\d.-]/g, '');
-    const num = parseFloat(cleaned);
-    return isNaN(num) ? undefined : num;
-  }
-
-  // 如果是对象（例如 {68800 -4 false finite true}），尝试提取数字
-  if (typeof value === 'object') {
-    const objStr = JSON.stringify(value);
-    const match = objStr.match(/(\d+)/);
-    if (match) {
-      const num = parseInt(match[1], 10);
-      // 检查是否是金额（通常以分为单位，需要转换为元）
-      if (num >= 100) {
-        return num / 100; // 转换为元
-      }
-      return num;
-    }
-    return undefined;
-  }
-
-  return undefined;
-}
-
-/**
- * 解析整数
- */
-function parseInteger(value: string | number | undefined): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value === 'number') return value;
-  const num = parseInt(value, 10);
-  return isNaN(num) ? undefined : num;
-}
-
-/**
  * 保存单页挂网药品数据到数据库
  */
 async function savePubonlnDrugBatch(drugList: PubonlnDrugInfo[]): Promise<void> {
@@ -555,33 +490,19 @@ export async function getPubonlnDrugList(options?: {
 }): Promise<{ data: PubonlnDrugInfo[]; total: number }> {
   const page = options?.page || 1;
   const pageSize = options?.pageSize || 20;
-  const offset = (page - 1) * pageSize;
 
   if (options?.searchKeyword) {
     console.log('[PubonlnScraper] 搜索关键词:', decodeURIComponent(options.searchKeyword));
   }
 
-  const whereClause = buildPubonlnConditions(options);
-
-  // 并行查询数据与总数
-  const [dataRows, countRows] = await Promise.all([
-    db
-      .select()
-      .from(drugInfoGd)
-      .where(whereClause)
-      .orderBy(desc(drugInfoGd.created_at))
-      .offset(offset)
-      .limit(pageSize),
-    db
-      .select({ count: count() })
-      .from(drugInfoGd)
-      .where(whereClause),
-  ]);
-
-  return {
-    data: dataRows.map(row => normalizePubonlnRow(row as unknown as Record<string, unknown>)),
-    total: Number(countRows[0]?.count ?? 0),
-  };
+  return getPagedList<PubonlnDrugInfo>({
+    table: drugInfoGd,
+    where: buildPubonlnConditions(options),
+    orderBy: desc(drugInfoGd.created_at),
+    page,
+    pageSize,
+    normalizeRow: normalizePubonlnRow,
+  });
 }
 
 /**
@@ -595,29 +516,12 @@ export async function exportPubonlnDrugData(options?: {
   minPacQuantity?: string;
   minMeasureUnit?: string;
 }): Promise<PubonlnDrugInfo[]> {
-  const whereClause = buildPubonlnConditions(options);
-  const allData: PubonlnDrugInfo[] = [];
-  const batchSize = 1000;
-  let offset = 0;
-  let hasMore = true;
-
-  while (hasMore) {
-    const rows = await db
-      .select()
-      .from(drugInfoGd)
-      .where(whereClause)
-      .orderBy(desc(drugInfoGd.created_at))
-      .offset(offset)
-      .limit(batchSize);
-
-    if (rows.length > 0) {
-      allData.push(...rows.map(row => normalizePubonlnRow(row as unknown as Record<string, unknown>)));
-      offset += batchSize;
-      hasMore = rows.length === batchSize;
-    } else {
-      hasMore = false;
-    }
-  }
+  const allData = await fetchAllInBatches<PubonlnDrugInfo>({
+    table: drugInfoGd,
+    where: buildPubonlnConditions(options),
+    orderBy: desc(drugInfoGd.created_at),
+    normalizeRow: normalizePubonlnRow,
+  });
 
   console.log(`[PubonlnScraper] 导出数据: ${allData.length} 条`);
   return allData;
