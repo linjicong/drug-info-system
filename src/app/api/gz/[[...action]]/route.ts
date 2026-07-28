@@ -1,10 +1,44 @@
 import { NextRequest } from 'next/server';
-import { exportDrugData } from '@/lib/drug-scraper';
-import { parseDrugFilterParams } from '@/lib/api/drug-query-params';
-import { jsonError } from '@/lib/api/responses';
+import { getDrugList, exportDrugData, scrapeDrugInfo } from '@/lib/drug-scraper';
+import { getProgress, resetProgress } from '@/lib/progress-manager';
+import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
+import { jsonError, pagedResponse } from '@/lib/api/responses';
 import { buildExcelResponse, exportTimestamp } from '@/lib/api/excel-export';
+import {
+  createFetchHandler,
+  createProgressHandlers,
+  createSchedulerHandlers,
+} from '@/lib/api/route-factories';
+import { createModuleRoute } from '@/lib/api/module-route';
 
-export async function GET(request: NextRequest) {
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+/**
+ * 广州药品采购（gz）页面模块路由
+ * GET  /api/gz            - 药品列表
+ * GET  /api/gz/export     - 导出 Excel
+ * POST /api/gz/fetch      - 触发抓取
+ * GET/DELETE /api/gz/progress  - 抓取进度轮询 / 重置（POST 405）
+ * GET/POST   /api/gz/scheduler - 调度器配置读取 / 更新
+ */
+
+async function getList(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const { page, pageSize } = parsePaginationParams(searchParams);
+    const filters = parseDrugFilterParams(searchParams);
+
+    const result = await getDrugList({ page, pageSize, ...filters });
+
+    return pagedResponse({ data: result.data, page, pageSize, total: result.total });
+  } catch (error) {
+    console.error('[API] 查询错误:', error);
+    return jsonError('查询失败', 500, error);
+  }
+}
+
+async function exportExcel(request: NextRequest) {
   try {
     const filters = parseDrugFilterParams(request.nextUrl.searchParams);
 
@@ -47,7 +81,7 @@ export async function GET(request: NextRequest) {
       '创建时间': item.created_at || '',
       '更新时间': item.updated_at || '',
     }));
-    
+
     // 设置列宽
     const colWidths = [
       { wch: 6 },   // 序号
@@ -93,3 +127,48 @@ export async function GET(request: NextRequest) {
     return jsonError('导出失败', 500, error);
   }
 }
+
+const fetchDrugs = createFetchHandler({
+  source: 'gz_drug',
+  run: async (request: NextRequest) => {
+    // 解析请求体（可能为空）
+    let body: { url?: string } = {};
+    try {
+      const text = await request.text();
+      if (text) {
+        body = JSON.parse(text);
+      }
+    } catch {
+      // 忽略解析错误，使用默认空对象
+    }
+
+    // 执行抓取
+    return scrapeDrugInfo(body.url);
+  },
+  toLogCounts: (result) => ({
+    total_count: result.total,
+    new_count: result.newCount,
+    update_count: result.updateCount,
+  }),
+  toResponseData: (result) => ({
+    total: result.total,
+    newCount: result.newCount,
+    updateCount: result.updateCount,
+  }),
+  errorLogPrefix: '[API] 抓取错误:',
+});
+
+const progressHandlers = createProgressHandlers({
+  getFn: () => getProgress('gz_drug'),
+  resetFn: () => resetProgress('gz_drug'),
+});
+
+const schedulerHandlers = createSchedulerHandlers('gz_drug');
+
+export const { GET, POST, PUT, DELETE } = createModuleRoute({
+  '': { GET: getList },
+  'export': { GET: exportExcel },
+  'fetch': { POST: fetchDrugs },
+  'progress': { GET: progressHandlers.GET, DELETE: progressHandlers.DELETE, POST: progressHandlers.POST },
+  'scheduler': { GET: schedulerHandlers.GET, POST: schedulerHandlers.POST },
+});

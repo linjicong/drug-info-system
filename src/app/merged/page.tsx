@@ -78,8 +78,8 @@ export default function MergedDrugPage() {
   const autoSearchInitializedRef = useRef(false);
 
   const query = useDrugQuery<MergedDrugInfo>({
-    drugsApi: '/api/merged/drugs',
-    exportApi: '/api/merged/drugs/export',
+    drugsApi: '/api/merged',
+    exportApi: '/api/merged/export',
     defaultExportFilename: '药品汇总表.xlsx',
     queryStorageKey: MERGED_QUERY_STORAGE_KEY,
     loadErrorFallback: '查询接口返回异常',
@@ -87,7 +87,7 @@ export default function MergedDrugPage() {
   });
 
   const polling = useProgressPolling<MergeProgress>({
-    progressApi: '/api/merged/drugs/sync/progress',
+    progressApi: '/api/merged/sync/progress',
     storageKey: MERGED_PROGRESS_STORAGE_KEY,
     defaultProgress: DEFAULT_MERGE_PROGRESS,
     parsePersisted: parsePersistedMergeProgress,
@@ -111,7 +111,7 @@ export default function MergedDrugPage() {
   const { progress: mergeProgress, startPolling, stopPolling, applyProgress } = polling;
 
   const scheduler = useScheduler({
-    schedulerApi: '/api/merged/drugs/scheduler',
+    schedulerApi: '/api/merged/scheduler',
     defaultConfig: DEFAULT_SCHEDULER_CONFIG,
     initialLoading: true,
     cacheBust: true,
@@ -135,7 +135,7 @@ export default function MergedDrugPage() {
     if (schedulerConfig.runningStatus !== 'idle') return;
     if (mergeProgress.status !== 'running') return;
 
-    fetch(`/api/merged/drugs/sync/progress?_t=${Date.now()}`, { cache: 'no-store' })
+    fetch(`/api/merged/sync/progress?_t=${Date.now()}`, { cache: 'no-store' })
       .then(res => res.json())
       .then((data: MergeProgress) => {
         applyProgress(data);
@@ -165,7 +165,7 @@ export default function MergedDrugPage() {
       });
       startPolling();
 
-      const response = await fetch('/api/merged/drugs/sync', { method: 'POST' });
+      const response = await fetch('/api/merged/sync', { method: 'POST' });
       const result = await response.json();
 
       if (response.ok) {

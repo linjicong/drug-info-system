@@ -7,11 +7,11 @@ import type { DrugInfo } from '@/components/drug/types';
 
 /** 广州药品采购平台 API 配置 */
 const GZ_API_CONFIG = {
-  drugsApi: '/api/drugs',
-  schedulerApi: '/api/scheduler',
-  progressApi: '/api/drugs/progress',
-  fetchApi: '/api/drugs/fetch',
-  exportApi: '/api/drugs/export',
+  drugsApi: '/api/gz',
+  schedulerApi: '/api/gz/scheduler',
+  progressApi: '/api/gz/progress',
+  fetchApi: '/api/gz/fetch',
+  exportApi: '/api/gz/export',
   defaultExportFilename: '药品信息.xlsx',
 };
 

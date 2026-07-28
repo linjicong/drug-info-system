@@ -7,11 +7,11 @@ import type { PubonlnDrugInfo } from '@/components/drug/types';
 
 /** 广东省医保局 API 配置 */
 const GD_API_CONFIG = {
-  drugsApi: '/api/pubonln/drugs',
+  drugsApi: '/api/pubonln',
   schedulerApi: '/api/pubonln/scheduler',
-  progressApi: '/api/pubonln/drugs/progress',
-  fetchApi: '/api/pubonln/drugs/fetch',
-  exportApi: '/api/pubonln/drugs/export',
+  progressApi: '/api/pubonln/progress',
+  fetchApi: '/api/pubonln/fetch',
+  exportApi: '/api/pubonln/export',
   defaultExportFilename: '挂网药品信息.xlsx',
 };
 

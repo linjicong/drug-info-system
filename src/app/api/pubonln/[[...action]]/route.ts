@@ -1,13 +1,48 @@
 import { NextRequest } from 'next/server';
-import { exportPubonlnDrugData } from '@/lib/pubonln-scraper';
-import { parseDrugFilterParams } from '@/lib/api/drug-query-params';
-import { jsonError } from '@/lib/api/responses';
+import {
+  getPubonlnDrugList,
+  exportPubonlnDrugData,
+  scrapePubonlnDrugInfo,
+} from '@/lib/pubonln-scraper';
+import { getProgress, resetProgress } from '@/lib/progress-manager';
+import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
+import { jsonError, pagedResponse } from '@/lib/api/responses';
 import { buildExcelResponse, exportTimestamp } from '@/lib/api/excel-export';
+import {
+  createFetchHandler,
+  createProgressHandlers,
+  createSchedulerHandlers,
+} from '@/lib/api/route-factories';
+import { createModuleRoute } from '@/lib/api/module-route';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 /**
- * GET /api/pubonln/drugs/export - 导出挂网药品信息为 Excel
+ * 广东医保挂网药品（pubonln）页面模块路由
+ * GET  /api/pubonln            - 挂网药品列表
+ * GET  /api/pubonln/export     - 导出 Excel
+ * POST /api/pubonln/fetch      - 触发抓取
+ * GET/DELETE /api/pubonln/progress  - 抓取进度轮询 / 重置
+ * GET/POST   /api/pubonln/scheduler - 调度器配置读取 / 更新
  */
-export async function GET(request: NextRequest) {
+
+async function getList(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const { page, pageSize } = parsePaginationParams(searchParams);
+    const filters = parseDrugFilterParams(searchParams);
+
+    const { data, total } = await getPubonlnDrugList({ page, pageSize, ...filters });
+
+    return pagedResponse({ data, page, pageSize, total });
+  } catch (error) {
+    console.error('[API] 获取挂网药品列表失败:', error);
+    return jsonError('获取数据失败', 500, error);
+  }
+}
+
+async function exportExcel(request: NextRequest) {
   try {
     const filters = parseDrugFilterParams(request.nextUrl.searchParams);
 
@@ -104,3 +139,33 @@ export async function GET(request: NextRequest) {
     return jsonError('导出失败', 500, error);
   }
 }
+
+const fetchDrugs = createFetchHandler({
+  source: 'gd_pubonln',
+  run: () => scrapePubonlnDrugInfo(),
+  toLogCounts: (result) => ({
+    total_count: result.total,
+    new_count: result.newCount,
+    update_count: 0,
+  }),
+  toResponseData: (result) => ({
+    total: result.total,
+    newCount: result.newCount,
+  }),
+  errorLogPrefix: '[API] 挂网药品抓取错误:',
+});
+
+const progressHandlers = createProgressHandlers({
+  getFn: () => getProgress('gd_pubonln'),
+  resetFn: () => resetProgress('gd_pubonln'),
+});
+
+const schedulerHandlers = createSchedulerHandlers('gd_pubonln');
+
+export const { GET, POST, PUT, DELETE } = createModuleRoute({
+  '': { GET: getList },
+  'export': { GET: exportExcel },
+  'fetch': { POST: fetchDrugs },
+  'progress': { GET: progressHandlers.GET, DELETE: progressHandlers.DELETE },
+  'scheduler': { GET: schedulerHandlers.GET, POST: schedulerHandlers.POST },
+});
