@@ -135,7 +135,8 @@ interface ScrapeResultBase {
 
 /**
  * 手动抓取路由工厂（POST 触发抓取）
- * 保留原有双层 catch 语义：内层负责日志/状态回写后 rethrow，外层统一 500
+ * 保留原有双层 catch 语义：内层负责日志/状态回写后 rethrow，外层统一 500；
+ * setRunningStatus('idle') 置于 finally，确保任何异常路径都不会把运行状态卡在 running
  */
 export function createFetchHandler<R extends ScrapeResultBase>(options: {
   source: ScrapeSource;
@@ -181,9 +182,6 @@ export function createFetchHandler<R extends ScrapeResultBase>(options: {
         // 同步更新 config 表的 last_run_at / last_run_status / next_run_at
         await finalizeScrapeRun(source, result.success ? 'success' : 'failed');
 
-        // 重置运行状态
-        await setRunningStatus(source, 'idle');
-
         if (result.success) {
           return NextResponse.json({
             success: true,
@@ -198,21 +196,33 @@ export function createFetchHandler<R extends ScrapeResultBase>(options: {
           }, { status: 500 });
         }
       } catch (error) {
-        // 更新抓取日志
+        // 日志/结果回写各自兜底，任一步失败都不阻断后续复位
         if (logId) {
-          await updateScrapeLog(logId, {
-            status: 'failed',
-            error_message: errorMessage(error),
-          });
+          try {
+            await updateScrapeLog(logId, {
+              status: 'failed',
+              error_message: errorMessage(error),
+            });
+          } catch (logErr) {
+            console.error('[API] 回写抓取日志失败:', logErr);
+          }
         }
 
-        // 同步更新 config 表的失败状态
-        await finalizeScrapeRun(source, 'failed');
-
-        // 重置运行状态
-        await setRunningStatus(source, 'idle');
+        try {
+          await finalizeScrapeRun(source, 'failed');
+        } catch (finalizeErr) {
+          console.error('[API] 回写抓取结果失败:', finalizeErr);
+        }
 
         throw error;
+      } finally {
+        // 无论成功/失败/回写异常，都强制复位运行状态，
+        // 避免 running_status 卡死导致下次无法再次触发抓取
+        try {
+          await setRunningStatus(source, 'idle');
+        } catch (resetErr) {
+          console.error('[API] 复位运行状态失败:', resetErr);
+        }
       }
     } catch (error) {
       console.error(errorLogPrefix, error);

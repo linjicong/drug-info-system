@@ -290,19 +290,32 @@ async function triggerSync() {
         console.error('[API] 执行合并同步任务失败:', err);
         finalStatus = 'failed';
         if (logId) {
-          await updateScrapeLog(logId, {
-            status: 'failed',
-            total_count: 0,
-            new_count: 0,
-            update_count: 0,
-            error_message: err instanceof Error ? err.message : '未知错误',
-          });
+          try {
+            await updateScrapeLog(logId, {
+              status: 'failed',
+              total_count: 0,
+              new_count: 0,
+              update_count: 0,
+              error_message: err instanceof Error ? err.message : '未知错误',
+            });
+          } catch (logErr) {
+            console.error('[API] 回写合并日志失败:', logErr);
+          }
         }
       })
       .finally(async () => {
-        // 同步更新 config 表的 last_run_at / last_run_status / next_run_at
-        await finalizeScrapeRun(SOURCE, finalStatus);
-        await setRunningStatus(SOURCE, 'idle');
+        // 同步更新 config 表的 last_run_at / last_run_status / next_run_at；
+        // finalize 与复位各自兜底，确保 running_status 不会因回写异常卡死
+        try {
+          await finalizeScrapeRun(SOURCE, finalStatus);
+        } catch (finalizeErr) {
+          console.error('[API] 回写合并结果失败:', finalizeErr);
+        }
+        try {
+          await setRunningStatus(SOURCE, 'idle');
+        } catch (resetErr) {
+          console.error('[API] 复位合并运行状态失败:', resetErr);
+        }
       });
 
     return NextResponse.json({

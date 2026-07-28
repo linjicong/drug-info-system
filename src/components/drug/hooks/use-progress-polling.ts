@@ -20,7 +20,7 @@ export interface UseProgressPollingOptions<P extends ProgressLike> {
   defaultProgress: P;
   /** 校验并归一化持久化快照，非法时返回 null */
   parsePersisted: (raw: unknown) => P | null;
-  /** 轮询间隔，默认 1000ms */
+  /** 轮询间隔，默认 5000ms */
   intervalMs?: number;
   /** completed / error 后进度卡自动隐藏延迟，默认 3000/6000ms */
   hideDelayMs?: { completed: number; error: number };
@@ -44,7 +44,7 @@ export function useProgressPolling<P extends ProgressLike>(options: UseProgressP
     storageKey,
     defaultProgress,
     parsePersisted,
-    intervalMs = 1000,
+    intervalMs = 5000,
     hideDelayMs = { completed: 3000, error: 6000 },
   } = options;
 

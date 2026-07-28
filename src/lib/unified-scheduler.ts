@@ -150,6 +150,13 @@ export async function updateUnifiedSchedulerConfig(
 }
 
 /**
+ * 僵尸运行状态判定阈值：running 且 updated_at 距今超过此时长视为残留
+ * （进程崩溃/实例回收导致 setRunningStatus('idle') 未执行），
+ * 自动复位后放行新抓取。阈值须大于最长单次抓取时长（当前约 10~20 分钟）
+ */
+const STALE_RUNNING_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
  * 检查是否可以开始抓取（防止重复抓取）
  */
 export async function canStartScrape(source: DataSource): Promise<{ canStart: boolean; reason: string }> {
@@ -160,6 +167,14 @@ export async function canStartScrape(source: DataSource): Promise<{ canStart: bo
   }
 
   if (config.running_status === 'running') {
+    // setRunningStatus 每次都会刷新 updated_at，抓取中途不再更新；
+    // 超过阈值说明上次任务异常终止未复位，自动自愈避免永久 409
+    const updatedAt = new Date(config.updated_at as unknown as string).getTime();
+    if (Number.isFinite(updatedAt) && Date.now() - updatedAt > STALE_RUNNING_TIMEOUT_MS) {
+      console.warn(`[UnifiedScheduler] 检测到僵尸运行状态 (${source})，自动复位为 idle`);
+      await setRunningStatus(source, 'idle');
+      return { canStart: true, reason: '' };
+    }
     return { canStart: false, reason: '已有抓取任务正在运行中' };
   }
 

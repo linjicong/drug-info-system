@@ -23,7 +23,7 @@ vi.mock('../drug-scraper', () => ({ scrapeDrugInfo: vi.fn() }));
 vi.mock('../pubonln-scraper', () => ({ scrapePubonlnDrugInfo: vi.fn() }));
 vi.mock('../merged-drug-service', () => ({ syncMergedDrugData: vi.fn() }));
 
-import { createScrapeLog, getUnifiedSchedulerConfig } from '../unified-scheduler';
+import { createScrapeLog, getUnifiedSchedulerConfig, canStartScrape } from '../unified-scheduler';
 
 describe('returning 改写: MySQL 不支持 RETURNING，用 lastInsertId 回查', () => {
   beforeEach(() => {
@@ -88,5 +88,41 @@ describe('returning 改写: MySQL 不支持 RETURNING，用 lastInsertId 回查'
     mocks.mockInsertValues.mockResolvedValue({ lastInsertId: 0 });
     const config = await getUnifiedSchedulerConfig('gz_drug');
     expect(config).toBeNull();
+  });
+});
+
+describe('canStartScrape: 僵尸运行状态自愈', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const baseConfig = {
+    id: 7,
+    source: 'gz_drug',
+    enabled: false,
+    interval_minutes: 60,
+    next_run_at: null,
+    last_run_at: null,
+    last_run_status: null,
+    cron_secret: 'secret-x',
+  };
+
+  it('idle 状态直接放行', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ ...baseConfig, running_status: 'idle', updated_at: new Date().toISOString() }]);
+    const { canStart } = await canStartScrape('gz_drug');
+    expect(canStart).toBe(true);
+  });
+
+  it('running 且 updated_at 在 30 分钟内：拒绝（防重复抓取不受影响）', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ ...baseConfig, running_status: 'running', updated_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() }]);
+    const { canStart, reason } = await canStartScrape('gz_drug');
+    expect(canStart).toBe(false);
+    expect(reason).toBe('已有抓取任务正在运行中');
+  });
+
+  it('running 且 updated_at 超过 30 分钟：自动复位并放行', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ ...baseConfig, running_status: 'running', updated_at: new Date(Date.now() - 31 * 60 * 1000).toISOString() }]);
+    const { canStart } = await canStartScrape('gz_drug');
+    expect(canStart).toBe(true);
   });
 });

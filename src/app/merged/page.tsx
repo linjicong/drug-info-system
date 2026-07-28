@@ -122,7 +122,7 @@ export default function MergedDrugPage() {
     updateNetworkErrorDescription: '网络错误，请重试',
     // 自动状态探针（用于响应系统的自动调度触发事件）
     probe: {
-      runningIntervalMs: 1000,
+      runningIntervalMs: 5000,
       idleIntervalMs: 5000,
       isProgressRunning: mergeProgress.status === 'running',
       onRunningDetected: startPolling,
