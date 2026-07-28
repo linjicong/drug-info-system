@@ -1,0 +1,44 @@
+# 依赖与构建产物（镜像内重新安装/构建）
+node_modules
+.next
+out
+build
+dist
+
+# 版本控制与 IDE
+.git
+.gitignore
+.gitmodules
+.vscode
+.idea
+
+# 环境变量（密钥通过 CloudBase 环境变量注入，禁止进镜像层）
+.env
+.env.*
+!.env.example
+
+# Spec-coding 工作流产物与文档（不进运行镜像）
+.specs
+.spec-coding
+.claude
+.cursor
+.coze
+docs
+
+# 一次性迁移/巡检脚本（不进运行镜像）
+scripts
+
+# 测试与配置噪音
+**/*.test.ts
+**/*.spec.ts
+coverage
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*
+
+# 部署文档本身无需进镜像
+DEPLOY-CLOUDBASE.md
+README.md
+GUIDE.md
+GOVERNANCE.md
+CHANGELOG.md

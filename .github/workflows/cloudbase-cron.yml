@@ -1,0 +1,64 @@
+name: CloudBase Cron Trigger
+
+# 替代 Vercel Cron：定时调用云托管部署后的 /api/cron/trigger 接口
+# 时间为 UTC（与 vercel.json 保持一致，GitHub Actions 的 cron 也是 UTC）
+#
+# 需在仓库 Settings -> Secrets and variables -> Actions 配置：
+#   DEPLOY_URL   云托管公网域名，如 https://your-app.ap-shanghai.run.tcloudbase.com（结尾不带 /）
+#   CRON_SECRET  与云托管环境变量 CRON_SECRET 一致
+
+on:
+  schedule:
+    - cron: '0 18 * * *'   # gz_drug     每天 UTC 18:00（北京 02:00）
+    - cron: '30 18 * * *'  # gd_pubonln  每天 UTC 18:30（北京 02:30）
+    - cron: '0 20 * * *'   # merged_drug 每天 UTC 20:00（北京 04:00）
+    - cron: '0 22 * * *'   # ledger      每天 UTC 22:00（北京 06:00）
+  workflow_dispatch:
+    inputs:
+      source:
+        description: '手动触发的数据源'
+        required: true
+        default: gz_drug
+        type: choice
+        options:
+          - gz_drug
+          - gd_pubonln
+          - merged_drug
+          - ledger
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 按 cron 时间选择数据源
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 18 * * *")  echo "source=gz_drug"     >> "$GITHUB_OUTPUT" ;;
+            "30 18 * * *") echo "source=gd_pubonln"  >> "$GITHUB_OUTPUT" ;;
+            "0 20 * * *")  echo "source=merged_drug" >> "$GITHUB_OUTPUT" ;;
+            "0 22 * * *")  echo "source=ledger"      >> "$GITHUB_OUTPUT" ;;
+            *)             echo "source=${{ github.event.inputs.source }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: 调用 cron 触发接口
+        env:
+          DEPLOY_URL: ${{ secrets.DEPLOY_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SOURCE: ${{ steps.pick.outputs.source }}
+        run: |
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::error::未配置 DEPLOY_URL secret"
+            exit 1
+          fi
+          echo "触发数据源: $SOURCE"
+          http_code=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${DEPLOY_URL}/api/cron/trigger?source=${SOURCE}")
+          echo "HTTP $http_code"
+          cat /tmp/resp.txt
+          echo ""
+          if [ "$http_code" -ne 200 ]; then
+            echo "::error::触发失败，HTTP $http_code"
+            exit 1
+          fi
