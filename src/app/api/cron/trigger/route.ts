@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   DataSource,
   getUnifiedSchedulerConfig,
+  canStartScrape,
   executeScrapeTask,
 } from '@/lib/unified-scheduler';
 import { executeLedgerSnapshot } from '@/lib/ledger-service';
@@ -55,8 +56,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 检查是否正在运行中
-    if (config.running_status === 'running') {
+    // 检查是否正在运行中（canStartScrape 含 30 分钟僵尸状态自愈，
+    // 进程崩溃残留的 running 状态不会让定时链路永久 skip）
+    const { canStart } = await canStartScrape(targetSource);
+    if (!canStart) {
       return NextResponse.json({
         success: true,
         message: 'Cron trigger skipped',
