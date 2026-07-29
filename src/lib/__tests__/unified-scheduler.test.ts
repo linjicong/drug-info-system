@@ -8,14 +8,17 @@ const mocks = vi.hoisted(() => {
   const mockSelectWhere = vi.fn(() => ({ limit: mockSelectLimit }));
   const mockSelectFrom = vi.fn(() => ({ where: mockSelectWhere }));
   const mockSelect = vi.fn(() => ({ from: mockSelectFrom }));
-  return { mockInsertValues, mockInsert, mockSelect, mockSelectFrom, mockSelectWhere, mockSelectLimit };
+  const mockUpdateWhere = vi.fn();
+  const mockUpdateSet = vi.fn((_setValues: Record<string, unknown>) => ({ where: mockUpdateWhere }));
+  const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
+  return { mockInsertValues, mockInsert, mockSelect, mockSelectFrom, mockSelectWhere, mockSelectLimit, mockUpdate, mockUpdateSet, mockUpdateWhere };
 });
 
 vi.mock('@/storage/database/db', () => ({
   db: {
     insert: mocks.mockInsert,
     select: mocks.mockSelect,
-    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn() })) })),
+    update: mocks.mockUpdate,
     delete: vi.fn(),
   },
 }));
@@ -23,7 +26,7 @@ vi.mock('../drug-scraper', () => ({ scrapeDrugInfo: vi.fn() }));
 vi.mock('../pubonln-scraper', () => ({ scrapePubonlnDrugInfo: vi.fn() }));
 vi.mock('../merged-drug-service', () => ({ syncMergedDrugData: vi.fn() }));
 
-import { createScrapeLog, getUnifiedSchedulerConfig, canStartScrape } from '../unified-scheduler';
+import { createScrapeLog, getUnifiedSchedulerConfig, canStartScrape, finalizeScrapeRun, updateUnifiedSchedulerConfig } from '../unified-scheduler';
 
 describe('returning 改写: MySQL 不支持 RETURNING，用 lastInsertId 回查', () => {
   beforeEach(() => {
@@ -124,5 +127,46 @@ describe('canStartScrape: 僵尸运行状态自愈', () => {
     mocks.mockSelectLimit.mockResolvedValue([{ ...baseConfig, running_status: 'running', updated_at: new Date(Date.now() - 31 * 60 * 1000).toISOString() }]);
     const { canStart } = await canStartScrape('gz_drug');
     expect(canStart).toBe(true);
+  });
+});
+
+describe('datetime 列回写必须传 Date 对象（drizzle date 模式会调 value.toISOString，传字符串直接抛错）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const enabledConfig = {
+    id: 9,
+    source: 'merged_drug',
+    enabled: true,
+    interval_minutes: 60,
+    next_run_at: null,
+    last_run_at: null,
+    last_run_status: null,
+    running_status: 'idle',
+    updated_at: new Date().toISOString(),
+    cron_secret: 'secret-y',
+  };
+
+  it('finalizeScrapeRun: last_run_at/updated_at/next_run_at 均为 Date 实例', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([enabledConfig]);
+    await finalizeScrapeRun('merged_drug', 'success');
+
+    expect(mocks.mockUpdateSet).toHaveBeenCalledTimes(1);
+    const setArg = mocks.mockUpdateSet.mock.calls[0][0];
+    expect(setArg.last_run_status).toBe('success');
+    expect(setArg.last_run_at).toBeInstanceOf(Date);
+    expect(setArg.updated_at).toBeInstanceOf(Date);
+    expect(setArg.next_run_at).toBeInstanceOf(Date);
+  });
+
+  it('updateUnifiedSchedulerConfig: updated_at/next_run_at 均为 Date 实例', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([enabledConfig]);
+    await updateUnifiedSchedulerConfig('merged_drug', { enabled: true, interval_minutes: 30 });
+
+    expect(mocks.mockUpdateSet).toHaveBeenCalledTimes(1);
+    const setArg = mocks.mockUpdateSet.mock.calls[0][0];
+    expect(setArg.updated_at).toBeInstanceOf(Date);
+    expect(setArg.next_run_at).toBeInstanceOf(Date);
   });
 });

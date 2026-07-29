@@ -106,7 +106,9 @@ export async function updateUnifiedSchedulerConfig(
     }
 
     const updateData: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
+      // datetime 列（date 模式）必须传 Date 对象：drizzle 驱动层会调 value.toISOString()，
+      // 传 ISO 字符串会直接抛错导致整条 update 失败
+      updated_at: new Date(),
     };
 
     if (config.enabled !== undefined) {
@@ -124,7 +126,7 @@ export async function updateUnifiedSchedulerConfig(
       const intervalMinutes = config.interval_minutes || currentConfig.interval_minutes;
       updateData.next_run_at = new Date(
         Date.now() + intervalMinutes * 60 * 1000
-      ).toISOString();
+      );
     } else if (config.enabled === false) {
       updateData.next_run_at = null;
     }
@@ -212,18 +214,19 @@ export async function finalizeScrapeRun(
   const config = await getUnifiedSchedulerConfig(source);
   if (!config) return;
 
-  const nowIso = new Date().toISOString();
+  // datetime 列必须写 Date 对象（同 updateUnifiedSchedulerConfig 的说明）
+  const now = new Date();
   const updateData: Record<string, unknown> = {
-    last_run_at: nowIso,
+    last_run_at: now,
     last_run_status: status,
-    updated_at: nowIso,
+    updated_at: now,
   };
 
   // 启用状态下顺便推进 next_run_at，避免外部 Cron 触发时间一直停留在过去的时刻
   if (config.enabled) {
     updateData.next_run_at = new Date(
       Date.now() + config.interval_minutes * 60 * 1000
-    ).toISOString();
+    );
   }
 
   await db
