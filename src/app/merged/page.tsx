@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Toaster } from 'sonner';
 import { toast } from 'sonner';
 import { SearchCard } from '@/components/drug/SearchCard';
@@ -91,20 +91,21 @@ export default function MergedDrugPage() {
     storageKey: MERGED_PROGRESS_STORAGE_KEY,
     defaultProgress: DEFAULT_MERGE_PROGRESS,
     parsePersisted: parsePersistedMergeProgress,
-    // 占位 running 期间服务端仍 idle：仅刷新耗时显示
-    onIdleIgnored: () => setNow(Date.now()),
+    // 占位 running 期间服务端仍 idle：刷新耗时显示并同步调度状态（与 gz/pubonln 一致）
+    onIdleIgnored: () => {
+      setNow(Date.now());
+      loadSchedulerConfig();
+    },
     onTick: (data, prevStatus) => {
       setNow(Date.now());
+      // 与 gz/pubonln 一致：轮询期间顺带刷新调度状态（running 展示、按钮禁用态）
+      loadSchedulerConfig();
 
-      if (data.status === 'completed' || data.status === 'error') {
-        // 任务结束后立刻刷新调度状态，推动按钮恢复为可点击
-        loadSchedulerConfig();
-        if (data.status === 'completed' && prevStatus === 'running') {
-          toast.success('合并同步任务已完成', { description: '正在重载数据...' });
-          handleSearch(); // 刷新数据
-        } else if (data.status === 'error' && prevStatus === 'running') {
-          toast.error('合并同步任务失败', { description: data.error });
-        }
+      if (data.status === 'completed' && prevStatus === 'running') {
+        toast.success('合并同步任务已完成', { description: '正在重载数据...' });
+        handleSearch(); // 刷新数据
+      } else if (data.status === 'error' && prevStatus === 'running') {
+        toast.error('合并同步任务失败', { description: data.error });
       }
     },
   });
@@ -120,16 +121,8 @@ export default function MergedDrugPage() {
     updateErrorTitle: '更新定步失败',
     updateNetworkErrorTitle: '更新配置失败',
     updateNetworkErrorDescription: '网络错误，请重试',
-    // 自动状态探针（用于响应系统的自动调度触发事件）：
-    // 运行期 5s 保障进度体验；空闲期 30s 即可（cron 间隔 60 分钟，发现延迟可接受）
-    probe: {
-      runningIntervalMs: 5000,
-      idleIntervalMs: 30000,
-      isProgressRunning: mergeProgress.status === 'running',
-      onRunningDetected: startPolling,
-    },
   });
-  const { schedulerConfig, configLoading, loadSchedulerConfig, updateSchedulerConfig } = scheduler;
+  const { schedulerConfig, loadSchedulerConfig } = scheduler;
 
   // 调度器已空闲但前端仍显示 running 时，主动校准一次进度
   useEffect(() => {

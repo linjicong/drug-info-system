@@ -23,7 +23,7 @@
 | 文件 | 变更 |
 |------|------|
 | src/lib/merged-drug-service.ts | 两个取数函数改 keyset 分页（`WHERE id > lastId ORDER BY id`，id 为 varchar(36) 主键，走索引 range scan）；每批循环内回写 gdLoaded/gzLoaded 进度 |
-| src/app/merged/page.tsx | 调度器探针空闲期间隔 5s → 30s（运行期保持 5s），降低 /api/merged/scheduler 空闲轮询频率 |
+| src/app/merged/page.tsx | 移除常驻调度器探针，对齐 gz/pubonln 模式：仅运行期轮询顺带刷新调度状态（onTick/onIdleIgnored 调 loadSchedulerConfig），空闲期零轮询；附带清理未使用的 useCallback/configLoading/updateSchedulerConfig |
 
 未改动：`shared/db-query.ts` 的 `fetchAllInBatches`（导出场景带筛选、
 数据量小，不在本次报障路径内，留待后续统一优化）。
