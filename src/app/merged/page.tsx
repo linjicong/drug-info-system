@@ -120,10 +120,11 @@ export default function MergedDrugPage() {
     updateErrorTitle: '更新定步失败',
     updateNetworkErrorTitle: '更新配置失败',
     updateNetworkErrorDescription: '网络错误，请重试',
-    // 自动状态探针（用于响应系统的自动调度触发事件）
+    // 自动状态探针（用于响应系统的自动调度触发事件）：
+    // 运行期 5s 保障进度体验；空闲期 30s 即可（cron 间隔 60 分钟，发现延迟可接受）
     probe: {
       runningIntervalMs: 5000,
-      idleIntervalMs: 5000,
+      idleIntervalMs: 30000,
       isProgressRunning: mergeProgress.status === 'running',
       onRunningDetected: startPolling,
     },
