@@ -7,7 +7,7 @@
 
 import { db } from '@/storage/database/db';
 import { drugInfoMerged, drugInfoGz, drugInfoGd } from '@/storage/database/shared/schema';
-import { and, asc, desc, eq, like, or, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import {
@@ -155,7 +155,9 @@ export const normalizeMergedRow = createRowNormalizer<MergedDrugInfo>(
  */
 async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
   let allData: GdDrugRow[] = [];
-  let offset = 0;
+  // keyset 分页（WHERE id > lastId）：OFFSET 深分页在 TiDB 上每页都要重扫前面所有行，
+  // 4 万+行时整个查询阶段长达数分钟且进度无反馈，前端看起来像卡死
+  let lastId = '';
   const batchSize = 1000;
 
   while (true) {
@@ -177,14 +179,16 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
         min_pac_pubonln_pric: drugInfoGd.min_pac_pubonln_pric,
       })
       .from(drugInfoGd)
+      .where(gt(drugInfoGd.id, lastId))
       .orderBy(asc(drugInfoGd.id))
-      .offset(offset)
       .limit(batchSize);
 
     if (rows.length === 0) break;
 
     allData = allData.concat(rows as unknown as GdDrugRow[]);
-    offset += batchSize;
+    lastId = String(rows[rows.length - 1].id);
+    // 每批回写进度，避免长查询期间前端数字纹丝不动
+    updateMergeProgress({ gdLoaded: allData.length });
     if (rows.length < batchSize) break;
   }
   return allData;
@@ -195,7 +199,8 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
  */
 async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
   let allData: GzDrugRow[] = [];
-  let offset = 0;
+  // 同 fetchAllGdDrugs：keyset 分页替代 OFFSET 深分页
+  let lastId = '';
   const batchSize = 1000;
 
   while (true) {
@@ -218,14 +223,15 @@ async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
         min_unit_price: drugInfoGz.min_unit_price,
       })
       .from(drugInfoGz)
+      .where(gt(drugInfoGz.id, lastId))
       .orderBy(asc(drugInfoGz.id))
-      .offset(offset)
       .limit(batchSize);
 
     if (rows.length === 0) break;
 
     allData = allData.concat(rows as unknown as GzDrugRow[]);
-    offset += batchSize;
+    lastId = String(rows[rows.length - 1].id);
+    updateMergeProgress({ gzLoaded: allData.length });
     if (rows.length < batchSize) break;
   }
   return allData;
