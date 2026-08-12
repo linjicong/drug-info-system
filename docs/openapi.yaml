@@ -1,0 +1,1778 @@
+openapi: 3.0.3
+info:
+  title: 药品信息管理系统 API
+  version: 1.0.0
+  description: |
+    药品信息管理系统后端接口文档。
+
+    覆盖广州药品采购平台（gz）、广东省医保局挂网药品（pubonln）、
+    药品汇总（merged）、台账追踪（ledger）、外部 Cron 触发（cron）、
+    服务探活（heartbeat）六个模块。
+
+    ## 鉴权说明
+    - 业务列表 / 查询 / 导出 / 进度接口：无需鉴权。
+    - 调度器更新（POST `/api/{module}/scheduler`）：应用内调用，无显式鉴权。
+    - Cron 触发（`/api/cron/trigger`）：
+      通过 `Authorization: Bearer <secret>` 或 `?secret=<secret>` 校验，
+      密钥优先取环境变量 `CRON_SECRET`，其次取数据库 `scheduler_config.cron_secret`。
+    - 台账跑批（`/api/ledger/scheduler`）：
+      通过 `Authorization: Bearer <secret>` 或 `?secret=<secret>` 校验，
+      密钥仅来自数据库 `scheduler_config.cron_secret`（ledger 源），不读环境变量。
+  contact:
+    name: 药品信息管理系统
+servers:
+  - url: /
+    description: 相对路径（与前端同源部署）
+tags:
+  - name: gz
+    description: 广州药品采购平台模块
+  - name: pubonln
+    description: 广东省医保局挂网药品模块
+  - name: merged
+    description: 药品汇总模块
+  - name: ledger
+    description: 台账追踪模块
+  - name: cron
+    description: 外部 Cron 触发
+  - name: heartbeat
+    description: 服务探活
+paths:
+  # ───────────────────────── heartbeat ─────────────────────────
+  /api/heartbeat:
+    get:
+      tags: [heartbeat]
+      summary: 服务探活
+      description: |
+        用于外部定时探活，防止 FaaS 服务长时间空闲后休眠；
+        同时写入 `health_check` 表验证数据库连通性。
+        写入异常仅记录日志，仍返回 200。
+      operationId: heartbeatGet
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+    head:
+      tags: [heartbeat]
+      summary: 轻量探活（不写库）
+      description: 允许探活平台使用 HEAD 进行更轻量的可用性检查，不写数据库。
+      operationId: heartbeatHead
+      responses:
+        '200':
+          description: 服务存活
+
+  # ───────────────────────── cron ─────────────────────────
+  /api/cron/trigger:
+    get:
+      tags: [cron]
+      summary: 外部 Cron 触发单个数据源任务
+      description: |
+        供外部 Cron（GitHub Actions / UptimeRobot / Serverless CRON）调用。
+        每次只触发一个数据源任务，串行同步执行完成（FaaS 防挂起）。
+
+        - `source` 必填，取值：`gz_drug` / `gd_pubonln` / `merged_drug` / `ledger`
+        - 鉴权：`Authorization: Bearer <secret>` 或 `?secret=<secret>`，
+          环境变量 `CRON_SECRET` 优先，数据库 `cron_secret` 作为第二通道
+        - 跳过条件：调度未启用 / 已在运行 / 未到下次执行时间，均返回 200 + skipped
+      operationId: cronTrigger
+      security:
+        - cronSecret: []
+      parameters:
+        - name: source
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [gz_drug, gd_pubonln, merged_drug, ledger]
+          description: 要触发的数据源。
+        - name: secret
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 鉴权密钥（与 Authorization 头二选一）。
+      responses:
+        '200':
+          description: 触发成功或被跳过
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CronTriggerResponse'
+        '400':
+          description: 缺少或非法 source 参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 鉴权失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 任务执行失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ───────────────────────── gz 列表 / 导出 ─────────────────────────
+  /api/gz:
+    get:
+      tags: [gz]
+      summary: 广州药品列表
+      description: 分页查询广州药品采购平台药品列表，支持多字段组合筛选。
+      operationId: gzList
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameWithAliasParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DrugInfo'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+        '500':
+          $ref: '#/components/responses/QueryError'
+
+  /api/gz/export:
+    get:
+      tags: [gz]
+      summary: 导出广州药品 Excel
+      description: |
+        按筛选条件导出全量广州药品数据为 Excel（共 29 列）。
+        无可导出数据时返回 400。文件名格式：`广州药品采购平台-YYMMDD-HHMMSS.xlsx`。
+      operationId: gzExport
+      parameters:
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameWithAliasParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+      responses:
+        '200':
+          description: Excel 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: 'attachment; filename="广州药品采购平台-YYMMDD-HHMMSS.xlsx"'
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 没有可导出的数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ExportError'
+
+  /api/gz/fetch:
+    post:
+      tags: [gz]
+      summary: 触发广州药品抓取
+      description: |
+        手动触发广州药品采购平台数据抓取。同步执行，完成后返回抓取计数。
+        若已有抓取任务运行中，返回 409。
+      operationId: gzFetch
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  description: 指定抓取的页面 URL（可选，缺省走默认配置）。
+      responses:
+        '200':
+          description: 抓取完成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          total:
+                            type: integer
+                            description: 抓取总数
+                          newCount:
+                            type: integer
+                            description: 新增条数
+                          updateCount:
+                            type: integer
+                            description: 更新条数
+        '409':
+          description: 已有抓取任务运行中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 抓取失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/gz/progress:
+    get:
+      tags: [gz]
+      summary: 查询广州药品抓取进度
+      description: 前端轮询获取抓取进度，响应禁止缓存。
+      operationId: gzProgressGet
+      responses:
+        '200':
+          description: 当前进度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchProgress'
+    delete:
+      tags: [gz]
+      summary: 重置广州药品抓取进度
+      operationId: gzProgressReset
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccess'
+
+  /api/gz/scheduler:
+    get:
+      tags: [gz]
+      summary: 读取广州药品调度器配置
+      operationId: gzSchedulerGet
+      responses:
+        '200':
+          description: 调度器配置
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SchedulerConfig'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+    post:
+      tags: [gz]
+      summary: 更新广州药品调度器配置
+      operationId: gzSchedulerUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulerUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          intervalMinutes:
+                            type: integer
+                          nextRunAt:
+                            type: string
+                            nullable: true
+        '400':
+          description: 无效的配置参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+
+  # ───────────────────────── pubonln 列表 / 导出 ─────────────────────────
+  /api/pubonln:
+    get:
+      tags: [pubonln]
+      summary: 广东医保挂网药品列表
+      description: 分页查询广东省医保局挂网药品列表，支持多字段组合筛选。
+      operationId: pubonlnList
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameWithAliasParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PubonlnDrugInfo'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+        '500':
+          $ref: '#/components/responses/QueryError'
+
+  /api/pubonln/export:
+    get:
+      tags: [pubonln]
+      summary: 导出广东医保挂网药品 Excel
+      description: |
+        按筛选条件导出全量挂网药品数据为 Excel（共 33 列）。
+        无可导出数据时返回 400。文件名格式：`广东医保挂网药品-YYMMDD-HHMMSS.xlsx`。
+      operationId: pubonlnExport
+      parameters:
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameWithAliasParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+      responses:
+        '200':
+          description: Excel 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: 'attachment; filename="广东医保挂网药品-YYMMDD-HHMMSS.xlsx"'
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 没有可导出的数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ExportError'
+
+  /api/pubonln/fetch:
+    post:
+      tags: [pubonln]
+      summary: 触发广东医保挂网药品抓取
+      description: |
+        手动触发广东医保局挂网药品数据抓取。同步执行，完成后返回抓取计数。
+        若已有抓取任务运行中，返回 409。
+      operationId: pubonlnFetch
+      responses:
+        '200':
+          description: 抓取完成
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          total:
+                            type: integer
+                            description: 抓取总数
+                          newCount:
+                            type: integer
+                            description: 新增条数
+        '409':
+          description: 已有抓取任务运行中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 抓取失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pubonln/progress:
+    get:
+      tags: [pubonln]
+      summary: 查询广东医保挂网药品抓取进度
+      description: 前端轮询获取抓取进度，响应禁止缓存。
+      operationId: pubonlnProgressGet
+      responses:
+        '200':
+          description: 当前进度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchProgress'
+    delete:
+      tags: [pubonln]
+      summary: 重置广东医保挂网药品抓取进度
+      operationId: pubonlnProgressReset
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccess'
+
+  /api/pubonln/scheduler:
+    get:
+      tags: [pubonln]
+      summary: 读取广东医保挂网药品调度器配置
+      operationId: pubonlnSchedulerGet
+      responses:
+        '200':
+          description: 调度器配置
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SchedulerConfig'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+    post:
+      tags: [pubonln]
+      summary: 更新广东医保挂网药品调度器配置
+      operationId: pubonlnSchedulerUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulerUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          intervalMinutes:
+                            type: integer
+                          nextRunAt:
+                            type: string
+                            nullable: true
+        '400':
+          description: 无效的配置参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+
+  # ───────────────────────── merged ─────────────────────────
+  /api/merged:
+    get:
+      tags: [merged]
+      summary: 整合药品列表
+      description: |
+        分页查询双平台整合后的药品汇总列表。
+        注意：merged 路由的 `companyName` **不**接受 `manufacturer` 别名。
+      operationId: mergedList
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MergedDrugInfo'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+        '500':
+          $ref: '#/components/responses/QueryError'
+
+  /api/merged/export:
+    get:
+      tags: [merged]
+      summary: 导出药品汇总 Excel
+      description: |
+        按筛选条件导出全量整合药品数据为 Excel（共 17 列）。
+        文件名格式：`药品汇总表-YYYYMMDD.xlsx`。
+        额外支持 `source` 与 `medicareTypeLabel` 参数。
+      operationId: mergedExport
+      parameters:
+        - $ref: '#/components/parameters/SearchKeywordParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameParam'
+        - $ref: '#/components/parameters/MinPacQuantityParam'
+        - $ref: '#/components/parameters/MinMeasureUnitParam'
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [gd_only, gz_only, both]
+          description: 数据来源筛选。
+        - name: medicareTypeLabel
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 医保甲乙类标签筛选。
+      responses:
+        '200':
+          description: Excel 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: 'attachment; filename="药品汇总表-YYYYMMDD.xlsx"'
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 没有可导出的数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ExportError'
+
+  /api/merged/scheduler:
+    get:
+      tags: [merged]
+      summary: 读取汇总定时同步配置
+      operationId: mergedSchedulerGet
+      responses:
+        '200':
+          description: 调度器配置
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SchedulerConfig'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+    post:
+      tags: [merged]
+      summary: 更新汇总定时同步配置
+      operationId: mergedSchedulerUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulerUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          intervalMinutes:
+                            type: integer
+                          nextRunAt:
+                            type: string
+                            nullable: true
+        '400':
+          description: 无效的配置参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/SchedulerError'
+
+  /api/merged/sync:
+    post:
+      tags: [merged]
+      summary: 手动触发合并同步
+      description: |
+        手动触发双平台数据合并同步，异步在后台执行，立即返回。
+        若已有合并任务运行中，返回 409。
+      operationId: mergedSync
+      responses:
+        '200':
+          description: 合并任务已在后台启动
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '409':
+          description: 已有合并任务运行中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 触发失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/merged/sync/progress:
+    get:
+      tags: [merged]
+      summary: 查询合并同步进度
+      description: 前端轮询获取合并同步进度（建议 5 秒一次），响应禁止缓存。
+      operationId: mergedSyncProgressGet
+      responses:
+        '200':
+          description: 当前进度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MergeProgress'
+    delete:
+      tags: [merged]
+      summary: 重置合并同步进度
+      operationId: mergedSyncProgressReset
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccess'
+
+  # ───────────────────────── ledger ─────────────────────────
+  /api/ledger/history:
+    get:
+      tags: [ledger]
+      summary: 台账历史查询
+      description: 分页查询重点药品在时间维度上的历史快照，支持日期区间与字段筛选。
+      operationId: ledgerHistory
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameParam'
+        - name: minPacQuantity
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: minMeasureUnit
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: 起始日期（YYYY-MM-DD）。
+        - name: endDate
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: 结束日期（YYYY-MM-DD）。
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DrugDailyLedger'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+        '500':
+          description: 查询失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/ledger/history/export-weekly:
+    get:
+      tags: [ledger]
+      summary: 按日期列表查询台账（周一导出）
+      description: |
+        按指定日期列表查询台账数据，用于「每周一导出」横向透视。
+        `dates` 为逗号分隔的日期字符串，每个日期需匹配 `YYYY-MM-DD`。
+      operationId: ledgerWeeklyExport
+      parameters:
+        - name: dates
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 逗号分隔的日期列表，例如 `2024-04-01,2024-04-08`。
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - $ref: '#/components/parameters/CompanyNameParam'
+        - name: minPacQuantity
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: minMeasureUnit
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DrugDailyLedger'
+                      dates:
+                        type: array
+                        items:
+                          type: string
+                        description: 实际查询的日期列表。
+        '400':
+          description: 未提供有效的日期参数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 查询失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/ledger/manual-trigger:
+    post:
+      tags: [ledger]
+      summary: 应用内手动触发台账快照
+      description: |
+        应用内部手动触发当日台账快照生成。
+        与 cron 接口分离，避免在浏览器端暴露 `cron_secret`。
+      operationId: ledgerManualTrigger
+      responses:
+        '200':
+          description: 触发结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerSnapshotResult'
+        '500':
+          description: 手动触发失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/ledger/scheduler:
+    post:
+      tags: [ledger]
+      summary: 台账 cron 跑批
+      description: |
+        供 Cron 每天调用生成当日台账快照。
+        鉴权：`Authorization: Bearer <secret>` 或 `?secret=<secret>`，
+        密钥来自数据库 `scheduler_config.cron_secret`（ledger 源）。
+        调度未启用时返回 skipped。
+      operationId: ledgerScheduler
+      security:
+        - cronSecret: []
+      parameters:
+        - name: secret
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 鉴权密钥（与 Authorization 头二选一）。
+      responses:
+        '200':
+          description: 跑批结果（成功或跳过）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerSnapshotResult'
+        '401':
+          description: 鉴权失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 跑批失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/ledger/tracked-drugs:
+    get:
+      tags: [ledger]
+      summary: 查询跟踪药品列表
+      description: 分页查询重点监控药品清单，支持搜索、字段筛选、仅看未匹配。
+      operationId: ledgerTrackedGet
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 关键词搜索。
+        - $ref: '#/components/parameters/ProductNameParam'
+        - $ref: '#/components/parameters/CompanyNameParam'
+        - $ref: '#/components/parameters/NationalDrugCodeParam'
+        - name: onlyUnmatched
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: 仅返回未匹配药品（传 `true` 启用）。
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/UserTrackedDrug'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+                      summary:
+                        type: object
+                        properties:
+                          unmatchedTotal:
+                            type: integer
+                            description: 未匹配药品总数。
+        '500':
+          description: 查询失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [ledger]
+      summary: 新增/批量导入跟踪药品
+      description: |
+        新增跟踪药品。请求体为单个对象或数组（数组即批量插入）。
+        传 `?replace=true` 时为全量替换（先清空再插入）。
+      operationId: ledgerTrackedSave
+      parameters:
+        - name: replace
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: 是否全量替换（传 `true` 启用）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/UserTrackedDrug'
+                - type: array
+                  items:
+                    $ref: '#/components/schemas/UserTrackedDrug'
+      responses:
+        '200':
+          description: 保存成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      count:
+                        type: integer
+                        description: 受影响条数。
+        '500':
+          description: 保存失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [ledger]
+      summary: 更新单个跟踪药品
+      operationId: ledgerTrackedUpdate
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 跟踪药品记录 ID。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserTrackedDrug'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccess'
+        '400':
+          description: 缺少参数 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 更新失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [ledger]
+      summary: 删除单个跟踪药品
+      operationId: ledgerTrackedDelete
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 跟踪药品记录 ID。
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccess'
+        '400':
+          description: 缺少参数 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 删除失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  # ───────────────────────── 安全方案 ─────────────────────────
+  securitySchemes:
+    cronSecret:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Cron 鉴权，格式：Bearer <secret>'
+
+  # ───────────────────────── 通用参数 ─────────────────────────
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+      description: 页码，默认 1。
+    PageSizeParam:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+      description: 每页条数，默认 20。
+    SearchKeywordParam:
+      name: search
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 关键词搜索。
+    ProductNameParam:
+      name: productName
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 产品名称（通用名）筛选。
+    NationalDrugCodeParam:
+      name: nationalDrugCode
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 医保编码筛选。
+    CompanyNameWithAliasParam:
+      name: companyName
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 生产企业筛选（gz / pubonln 还接受 `manufacturer` 别名）。
+    CompanyNameParam:
+      name: companyName
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 生产企业筛选（merged / ledger 不接受别名）。
+    MinPacQuantityParam:
+      name: minPacQuantity
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 最小包装数量筛选（别名 `minPackQuantity`）。
+    MinMeasureUnitParam:
+      name: minMeasureUnit
+      in: query
+      required: false
+      schema:
+        type: string
+      description: 最小计量单位筛选（别名 `minPackUnit`）。
+
+  # ───────────────────────── 通用响应 ─────────────────────────
+  responses:
+    QueryError:
+      description: 查询失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ExportError:
+      description: 导出失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    SchedulerError:
+      description: 调度器配置操作失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  # ───────────────────────── 数据模型 ─────────────────────────
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          description: 提示信息（部分接口返回）。
+      required: [success]
+
+    SimpleSuccess:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+      required: [success]
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          description: 错误提示。
+        error:
+          type: string
+          description: 错误详情（可选）。
+      required: [success, message]
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+      required: [page, pageSize, total, totalPages]
+
+    HeartbeatResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: service is alive
+        timestamp:
+          type: string
+          format: date-time
+      required: [success, message, timestamp]
+
+    CronTriggerResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+          example: Cron trigger completed
+        result:
+          type: object
+          properties:
+            source:
+              type: string
+              enum: [gz_drug, gd_pubonln, merged_drug, ledger]
+            status:
+              type: string
+              description: 'triggered / skipped (disabled) / skipped (already running) / skipped (next run at ...)'
+      required: [success, message, result]
+
+    DrugInfo:
+      type: object
+      description: 广州药品采购平台药品信息
+      properties:
+        id:
+          type: string
+        goods_id:
+          type: string
+          description: 商品ID（与 procurecatalog_id 组成复合唯一键）
+        procurecatalog_id:
+          type: string
+          description: 采购目录ID（与 goods_id 组成复合唯一键）
+        product_name:
+          type: string
+          description: 药品通用名
+        goods_name:
+          type: string
+          description: 药品商品名
+        company_name_sc:
+          type: string
+          description: 生产企业
+        medicinemodel:
+          type: string
+          description: 剂型名称
+        unit:
+          type: string
+          description: 规格（包装单位）
+        min_unit:
+          type: string
+          description: 最小规格
+        outlook:
+          type: string
+          description: 规格包装
+        unit_id:
+          type: string
+          description: 规格ID
+        factor:
+          type: number
+          description: 数量
+        outlook_unit:
+          type: number
+          description: 规格包装单位数值
+        bid_price:
+          type: number
+          description: 包装单位参考价格(元)
+        min_unit_price:
+          type: number
+          description: 最小制剂单位参考价格(元)
+        max_listing_price:
+          type: number
+          description: 最高挂网价格(元)
+        national_drug_code:
+          type: string
+          description: 医保编码
+        purchase_type:
+          type: integer
+          description: 采购方式
+        medicare_type:
+          type: integer
+          description: '甲乙类（0-甲类，1-乙类，2-非医保）'
+        source_type:
+          type: string
+          description: 药品挂网类别
+        material_name:
+          type: string
+          description: 材料名称
+        hidden_price_flag:
+          type: integer
+          description: 隐藏价格标志
+        subarea_flag:
+          type: integer
+          description: 活跃分区标志
+        is_out_stock:
+          type: integer
+          description: 商品状态
+        fs_rate:
+          type: number
+          description: 费率
+        net_time:
+          type: string
+          description: 挂网时间
+        price_formation_time:
+          type: string
+          description: 价格形成时间
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, goods_id, procurecatalog_id, product_name, created_at]
+
+    PubonlnDrugInfo:
+      type: object
+      description: 广东省医保局挂网药品信息
+      properties:
+        id:
+          type: string
+        drug_id:
+          type: integer
+        gw_active:
+          type: string
+          description: 全省交易状态
+        genname:
+          type: string
+          description: 注册名称（通用名）
+        trade_name:
+          type: string
+          description: 商品名
+        reg_dosform_name:
+          type: string
+          description: 注册剂型
+        dosform_name:
+          type: string
+          description: 剂型名称
+        reg_spec_name:
+          type: string
+          description: 注册规格
+        pacmatl:
+          type: string
+          description: 包装材质
+        specification_properties:
+          type: string
+          description: 规格属性
+        listing_license_holder:
+          type: string
+          description: 上市许可持有人
+        prodentp_name:
+          type: string
+          description: 生产企业/厂商
+        dcla_entp_name:
+          type: string
+          description: 申报企业名称
+        aprvno:
+          type: string
+          description: 批准文号/注册证号
+        convrat:
+          type: string
+          description: 最小包装数量（转换比）
+        minunt_name:
+          type: string
+          description: 最小计量单位
+        minpac_name:
+          type: string
+          description: 最小包装单位
+        min_pac_pubonln_pric:
+          type: number
+          description: 挂网价格(元)
+        pubonln_time:
+          type: string
+          description: 挂网时间
+        drug_class:
+          type: string
+          description: 药品分类
+        policy_att:
+          type: string
+          description: 政策属性
+        drug_select_type:
+          type: string
+          description: 政策类别
+        quality_lv:
+          type: string
+          description: 质量层次
+        is_national_basic_drug:
+          type: string
+          description: 是否国家基药
+        is_shortage_drug:
+          type: string
+          description: 是否短缺易短缺药品
+        jyl_no:
+          type: string
+          description: 编号
+        jyl_category:
+          type: string
+          description: 2025版甲乙类
+        dishonesty_lv:
+          type: string
+          description: 失信等级
+        dishonesty_stas:
+          type: string
+          description: 是否修复
+        price_risk:
+          type: string
+          description: 价格风险提示
+        drug_code:
+          type: string
+          description: 国家医保代码
+        zc_spt_id:
+          type: string
+          description: 招采系统ID
+        dcla_entp_uscc:
+          type: string
+          description: 申报企业统一社会信用代码
+        formation_mode:
+          type: string
+          description: 形成方式
+        exist_pubonln_pric:
+          type: integer
+          description: 是否存在挂网价格（1-是，0-否）
+        remark:
+          type: string
+          description: 备注
+        stop_pubonln:
+          type: integer
+          description: 是否暂停挂网/已撤网（1-是，0-否）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, genname, created_at]
+
+    MergedDrugInfo:
+      type: object
+      description: 整合药品数据（统一字段）
+      properties:
+        id:
+          type: string
+          description: 唯一标识（合并 key）
+        source:
+          type: string
+          enum: [gd_only, gz_only, both]
+          description: '数据来源：gd_only=仅广东医保, gz_only=仅广州采购, both=两源均有'
+        product_name:
+          type: string
+          description: 产品名称（通用名）
+        national_drug_code:
+          type: string
+          description: 医保编码
+        dosform:
+          type: string
+          description: 剂型
+        company_name:
+          type: string
+          description: 生产企业
+        spec:
+          type: string
+          description: 规格
+        min_pac_quantity:
+          description: 最小包装数量
+          oneOf:
+            - type: string
+            - type: number
+        min_pac_unit:
+          type: string
+          description: 最小包装单位
+        min_measure_unit:
+          type: string
+          description: 最小计量单位
+        drug_net_type:
+          type: string
+          description: 药品挂网类别
+        net_time:
+          type: string
+          description: 挂网时间
+        medicare_type_label:
+          type: string
+          description: 医保甲乙类（统一为字符串）
+        package_material:
+          type: string
+          description: 包装材料
+        gd_price:
+          type: number
+          description: 省平台挂网价格（广东医保来源）
+        gz_bid_price:
+          type: number
+          description: GPO挂网价格（广州采购平台来源，中标价）
+        gz_min_unit_price:
+          type: number
+          description: GPO挂网最小规格价格（广州采购平台来源）
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 数据同步时间
+      required: [id, source, product_name]
+
+    FetchProgress:
+      type: object
+      description: 抓取进度（gz / pubonln 共用）
+      properties:
+        status:
+          type: string
+          enum: [idle, running, completed, error]
+        currentPage:
+          type: integer
+        totalPages:
+          type: integer
+        processedCount:
+          type: integer
+        totalCount:
+          type: integer
+        newCount:
+          type: integer
+        updateCount:
+          type: integer
+        startTime:
+          type: integer
+          nullable: true
+          description: 开始时间（ms 时间戳）
+        endTime:
+          type: integer
+          nullable: true
+          description: 结束时间（ms 时间戳）
+        error:
+          type: string
+          nullable: true
+
+    MergeProgress:
+      type: object
+      description: 合并同步进度
+      properties:
+        status:
+          type: string
+          enum: [idle, running, completed, error]
+        phase:
+          type: string
+          description: 当前处理阶段描述
+        gdLoaded:
+          type: integer
+          description: 广东医保已加载条数
+        gzLoaded:
+          type: integer
+          description: 广州采购平台已加载条数
+        mergedTotal:
+          type: integer
+          description: 合并去重后总条数
+        savedCount:
+          type: integer
+          description: 已写入新表条数
+        startTime:
+          type: integer
+          nullable: true
+          description: 开始时间（ms 时间戳）
+        endTime:
+          type: integer
+          nullable: true
+          description: 结束时间（ms 时间戳）
+        error:
+          type: string
+          nullable: true
+
+    SchedulerConfig:
+      type: object
+      description: 调度器配置（读取返回）
+      properties:
+        enabled:
+          type: boolean
+        intervalMinutes:
+          type: integer
+          description: 执行间隔（分钟）
+        nextRunAt:
+          type: string
+          nullable: true
+          description: 下次执行时间
+        lastRunAt:
+          type: string
+          nullable: true
+          description: 上次执行时间
+        lastRunStatus:
+          type: string
+          nullable: true
+          description: 上次执行状态
+        cronSecret:
+          type: string
+          nullable: true
+          description: Cron 鉴权密钥
+        isRunning:
+          type: boolean
+          description: 是否正在运行
+        runningStatus:
+          type: string
+          enum: [idle, running]
+        latestLog:
+          type: object
+          nullable: true
+          properties:
+            startTime:
+              type: string
+            endTime:
+              type: string
+              nullable: true
+            status:
+              type: string
+            totalCount:
+              type: integer
+            newCount:
+              type: integer
+            updateCount:
+              type: integer
+            durationSeconds:
+              type: integer
+              nullable: true
+        latestDataTime:
+          type: string
+          nullable: true
+          description: 最新数据时间
+
+    SchedulerUpdateRequest:
+      type: object
+      description: 调度器配置更新请求
+      properties:
+        enabled:
+          type: boolean
+          description: 是否启用定时任务
+        intervalMinutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          description: 执行间隔（分钟，1~1440）
+        cronSecret:
+          type: string
+          description: Cron 鉴权密钥
+      minProperties: 1
+
+    UserTrackedDrug:
+      type: object
+      description: 跟踪药品记录
+      properties:
+        id:
+          type: string
+        product_name:
+          type: string
+          description: 产品名称
+        national_drug_code:
+          type: string
+          description: 医保编码
+        company_name:
+          type: string
+          description: 生产企业
+        min_pac_quantity:
+          type: string
+          description: 最小包装数量
+        min_measure_unit:
+          type: string
+          description: 最小计量单位
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        match_status:
+          type: string
+          enum: [matched, unmatched]
+          description: 匹配状态
+        mismatch_fields:
+          type: array
+          items:
+            type: string
+          description: 未匹配字段列表
+        match_hint:
+          type: string
+          description: 未匹配原因提示
+      required: [product_name]
+
+    DrugDailyLedger:
+      type: object
+      description: 药品台账日快照
+      properties:
+        id:
+          type: string
+        tracked_drug_id:
+          type: string
+        stat_date:
+          type: string
+          format: date
+          description: 统计日期
+        product_name:
+          type: string
+          description: 产品名称
+        national_drug_code:
+          type: string
+          description: 医保编码
+        dosform:
+          type: string
+          description: 剂型
+        company_name:
+          type: string
+          description: 生产企业
+        spec:
+          type: string
+          description: 规格
+        min_pac_quantity:
+          type: string
+          description: 最小包装数量
+        min_pac_unit:
+          type: string
+          description: 最小包装单位
+        min_measure_unit:
+          type: string
+          description: 最小计量单位
+        drug_net_type:
+          type: string
+          description: 药品挂网类别
+        net_time:
+          type: string
+          description: 挂网时间
+        gpo_price:
+          type: number
+          description: GPO 价格
+        provincial_price:
+          type: number
+          description: 省平台价格
+        created_at:
+          type: string
+          format: date-time
+      required: [stat_date, product_name]
+
+    LedgerSnapshotResult:
+      type: object
+      description: 台账快照生成结果
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+          description: 结果说明（如「成功快照 N 条药品台账(YYYY-MM-DD)」）
+        result:
+          type: object
+          nullable: true
+          properties:
+            status:
+              type: string
+              description: '跳过状态（如 skipped (disabled)），仅跳过场景返回'
+      required: [success, message]
