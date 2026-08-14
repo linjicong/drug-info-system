@@ -36,8 +36,8 @@ concurrency:
 
 jobs:
   run:
-    # 国内 self-hosted runner（注册时带 drug-scrape 标签）
-    runs-on: [self-hosted, drug-scrape]
+    # 国内 self-hosted runner
+    runs-on: [self-hosted]
     timeout-minutes: 45
     # self-hosted 可能是 Windows/Linux，统一用 bash（Windows 走 Git Bash）
     defaults:
