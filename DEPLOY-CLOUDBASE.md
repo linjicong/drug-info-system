@@ -68,17 +68,42 @@ docker run --rm -p 3000:3000 \
 
 ---
 
-## 四、定时抓取任务（GitHub Actions）
+## 四、定时抓取任务（GitHub Actions + self-hosted runner）
 
-抓取/合并/台账任务不在应用容器内执行，而是由 `.github/workflows/scrape-runner.yml` 在 GitHub runner 上直连 TiDB 执行（与部署位置无关）：
+抓取/合并/台账任务不在应用容器内执行，而是由 `.github/workflows/scrape-runner.yml`
+在 **国内 self-hosted runner** 上直连 TiDB 执行（与部署位置无关）。
+
+> ⚠️ 必须用 self-hosted：广州/广东平台源站带 CloudWAF，按出口 IP 拦截，
+> GitHub 托管 runner 的海外数据中心 IP 会被拦（返回「访问被拦截」HTML 而非 JSON）。
+
+### 4.1 注册 self-hosted runner（一次性）
+
+在一台国内常开机器（家用 PC / NAS / 云服务器）上：
+
+1. 前置条件：装好 Git（Windows 需含 Git Bash，workflow 统一用 bash）；机器能访问
+   github.com、nodejs.org、registry.npmjs.org（直连不通时见下方代理说明）
+2. GitHub 仓库 → Settings → Actions → Runners → **New self-hosted runner**
+3. 按页面给出的命令下载 runner 程序并配置，**labels 填 `self-hosted, drug-scrape`**
+4. 安装为系统服务并启动（`config.cmd`/`config.sh` 时加 `--runasservice`，
+   或按页面指引安装服务），保证开机自启
+
+> 代理说明：若机器直连 GitHub 超时，在 runner 目录的 `.env` 文件中配置
+> `https_proxy=http://127.0.0.1:7897` 与 `http_proxy=...`（代理端口按实际调整），
+> 再重启 runner 服务。
+
+### 4.2 配置与运行
 
 1. 在 GitHub 仓库 → Settings → Secrets and variables → Actions 添加：
    - `DATABASE_URL`：TiDB 连接串，与容器环境变量同值
 2. 运行机制：schedule 每 5 分钟轮询（上线初期注释禁用，验证后放开），
    认领数据库中 queued 的手动任务与到期的定时任务；定时时刻由
    `scheduler_config.next_run_at` 到期判定吸收 cron 的分钟级漂移。
-3. 手动测试：Actions → Scrape Runner → Run workflow → 选 source 运行，
+3. 手动测试：Actions → Scrape Runner → Run workflow → 选 source（先 gz_drug）运行，
    查看日志应输出各源处理结果，且 `scrape_log` 出现 `success` 记录。
+
+> 安全提示：self-hosted runner 会执行仓库 workflow，本仓库 workflow 仅含
+> schedule / workflow_dispatch 触发器（无 PR 触发），风险可控；请勿给本仓库
+> 添加 pull_request 类触发器。
 
 ---
 
@@ -91,6 +116,8 @@ docker run --rm -p 3000:3000 \
 | 容器启动但外部访问超时/拒绝 | 未监听 `0.0.0.0` 或端口不匹配 | 确认 `HOSTNAME=0.0.0.0`，监听端口 = 服务端口 3000 |
 | API 返回 500，日志报 DATABASE_URL | 未配置 `DATABASE_URL` | 在环境变量中补齐 |
 | Actions 抓取任务失败 | 未配置 `DATABASE_URL` secret 或连接串错误 | 校对仓库 Secrets 中的 `DATABASE_URL` |
+| 抓取日志出现「访问被拦截」/ Invalid JSON response | 出口 IP 被源站 CloudWAF 拦截（GitHub 托管 runner 海外 IP） | 改用国内 self-hosted runner（见第四节） |
+| Actions 页面没有 workflow | workflow 只在非默认分支 | 确认默认分支（master）已包含 `.github/workflows/` |
 | 构建报某原生模块缺失 | alpine 缺 glibc | 将 Dockerfile 三处 `node:20-alpine` 改为 `node:20-slim` |
 
 ---

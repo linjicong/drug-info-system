@@ -1,12 +1,16 @@
 name: Scrape Runner
 
-# 抓取任务执行器：GitHub Actions runner 直连 TiDB 执行四源抓取/合并/快照。
+# 抓取任务执行器：self-hosted runner（国内机器）直连 TiDB 执行四源抓取/合并/快照。
 # Vercel 侧只负责入队（写 queued 日志）与读状态，任务本体全部在本 workflow 执行。
+#
+# 为什么 self-hosted：广州/广东平台源站带 CloudWAF，按出口 IP 拦截，
+# GitHub 托管 runner 的海外数据中心 IP 会被拦（返回「访问被拦截」HTML）。
+# 国内机器注册 runner 后走本地出口即可。注册步骤见 DEPLOY-CLOUDBASE.md。
 #
 # 需在仓库 Settings -> Secrets and variables -> Actions 配置：
 #   DATABASE_URL  TiDB 连接串（与 .env / Vercel 环境变量同源）
 #
-# 上线步骤：schedule 先注释禁用，待 Vercel 部署新版 + dispatch 试跑通过后，
+# 上线步骤：schedule 先注释禁用，待 dispatch 试跑通过后，
 # 再放开 schedule（见 .specs/actions-scrape-runner/design.md §8）。
 
 on:
@@ -32,8 +36,13 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    # 国内 self-hosted runner（注册时带 drug-scrape 标签）
+    runs-on: [self-hosted, drug-scrape]
     timeout-minutes: 45
+    # self-hosted 可能是 Windows/Linux，统一用 bash（Windows 走 Git Bash）
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
