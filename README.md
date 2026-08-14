@@ -28,7 +28,7 @@ pnpm start
 
 ### 部署到 Vercel
 
-项目支持 Vercel 部署，推送代码到 Git 仓库后在 Vercel 导入即可。所需环境变量见 `.env.example`，在 Vercel Dashboard 中配置。定时任务通过 `vercel.json` 的 Cron Jobs 配置，同时保留外部调度器触发 `/api/cron/trigger` 的能力。
+项目支持 Vercel 部署，推送代码到 Git 仓库后在 Vercel 导入即可。所需环境变量见 `.env.example`，在 Vercel Dashboard 中配置。定时抓取/合并任务由 GitHub Actions（`.github/workflows/scrape-runner.yml`）直连数据库执行：Vercel 侧只负责任务入队（手动按钮写 queued 日志）与读取进度/状态，需在仓库 Settings → Secrets 配置 `DATABASE_URL`。
 
 ## 项目结构
 
@@ -348,7 +348,7 @@ export const useStore = create<Store>((set) => ({
 - **字体**: Geist Sans & Geist Mono
 - **包管理器**: pnpm 9+
 - **TypeScript**: 5.x
-- **部署**: Vercel（Cron Jobs 定时调度）
+- **部署**: Vercel（定时抓取由 GitHub Actions scrape-runner 执行）
 - **数据库**: TiDB Cloud (MySQL，via @tidbcloud/serverless)
 - **ORM**: Drizzle ORM (mysql-core + tidb-serverless 适配)
 

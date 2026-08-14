@@ -1,5 +1,10 @@
 /**
  * 整合药品数据同步进度管理器
+ * @deprecated 进度读写已迁移到 task_progress 表（task-progress-repo），
+ * 任务执行已迁移到 GitHub Actions runner（scripts/scrape-runner.ts）。
+ * 本模块的内存 store 仅作为无 sinks 时的历史回退路径保留，观察期后物理删除；
+ * MergeProgress 类型仍为前后端响应契约的一部分，请勿移除。
+ *
  * 独立于 GD/GZ 两个模块的进度状态，避免互相干扰
  * 进度状态经 createProgressStore 存于 globalThis（键名 __mergedProgressState__ 保持不变），
  * 支持前端 5 秒轮询获取进度

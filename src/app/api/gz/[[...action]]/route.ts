@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
-import { getDrugList, exportDrugData, scrapeDrugInfo } from '@/lib/drug-scraper';
-import { getProgress, resetProgress } from '@/lib/progress-manager';
+import { getDrugList, exportDrugData } from '@/lib/drug-scraper';
+import { fetchProgressFromDb, resetTaskProgress } from '@/lib/task-progress-repo';
 import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
 import { jsonError, pagedResponse } from '@/lib/api/responses';
 import { buildExcelResponse, exportTimestamp } from '@/lib/api/excel-export';
@@ -130,37 +130,12 @@ async function exportExcel(request: NextRequest) {
 
 const fetchDrugs = createFetchHandler({
   source: 'gz_drug',
-  run: async (request: NextRequest) => {
-    // 解析请求体（可能为空）
-    let body: { url?: string } = {};
-    try {
-      const text = await request.text();
-      if (text) {
-        body = JSON.parse(text);
-      }
-    } catch {
-      // 忽略解析错误，使用默认空对象
-    }
-
-    // 执行抓取
-    return scrapeDrugInfo(body.url);
-  },
-  toLogCounts: (result) => ({
-    total_count: result.total,
-    new_count: result.newCount,
-    update_count: result.updateCount,
-  }),
-  toResponseData: (result) => ({
-    total: result.total,
-    newCount: result.newCount,
-    updateCount: result.updateCount,
-  }),
-  errorLogPrefix: '[API] 抓取错误:',
+  errorLogPrefix: '[API] 抓取入队错误:',
 });
 
 const progressHandlers = createProgressHandlers({
-  getFn: () => getProgress('gz_drug'),
-  resetFn: () => resetProgress('gz_drug'),
+  getFn: () => fetchProgressFromDb('gz_drug'),
+  resetFn: () => resetTaskProgress('gz_drug'),
 });
 
 const schedulerHandlers = createSchedulerHandlers('gz_drug');

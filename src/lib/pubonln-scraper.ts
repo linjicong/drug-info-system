@@ -12,11 +12,8 @@ import { httpsPost } from './shared/http';
 import { parseNumber, parseInteger } from './shared/parse';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import { runScrape } from './shared/scrape-orchestrator';
-import {
-  updateProgress,
-  startProgress,
-  resetProgress,
-} from './progress-manager';
+import { updateProgress } from './progress-manager';
+import type { FetchProgressPatch } from './progress-patch';
 
 const PROGRESS_SOURCE = 'gd_pubonln' as const;
 
@@ -231,25 +228,41 @@ async function clearPubonlnDrugTable(): Promise<void> {
 
 /**
  * 抓取广东医保服务平台挂网药品信息
+ *
+ * @param options.onProgress 进度补丁回调；缺省时回退写入内存进度 store（过渡期兼容）
  */
-export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
+export async function scrapePubonlnDrugInfo(
+  options?: { onProgress?: (patch: FetchProgressPatch) => void }
+): Promise<PubonlnScrapeResult> {
   const pageSize = 500;
 
   let firstPageData!: { drugs: PubonlnDrugInfo[]; total: number };
 
+  const emitProgress = options?.onProgress ?? ((patch: FetchProgressPatch) => updateProgress(PROGRESS_SOURCE, patch));
+
   return runScrape<PubonlnScrapeResult>({
     logPrefix: '[PubonlnScraper]',
-    source: PROGRESS_SOURCE,
+    emitProgress,
     pageConcurrency: 5,
     init() {
       globalNewCount = 0;
       globalTotalProcessed = 0;
-      resetProgress(PROGRESS_SOURCE);
 
       console.log('[PubonlnScraper] 开始抓取挂网药品信息...');
 
       // 先初始化进度（临时总页数=1），让前端在首页抓取期间即可看到进度卡片
-      startProgress(PROGRESS_SOURCE, 1);
+      emitProgress({
+        status: 'running',
+        currentPage: 0,
+        totalPages: 1,
+        processedCount: 0,
+        totalCount: 0,
+        newCount: 0,
+        updateCount: 0,
+        startTime: Date.now(),
+        endTime: null,
+        error: null,
+      });
     },
     async fetchFirstPage() {
       // 先尝试抓取第一页数据，验证接口可用并拿到总数
@@ -261,7 +274,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
     },
     async persistFirstPage(totalRecords, totalPages) {
       // 拿到真实的总页数/总条数后同步一次进度
-      updateProgress(PROGRESS_SOURCE, {
+      emitProgress({
         totalPages,
         totalCount: totalRecords,
         currentPage: 0,
@@ -275,7 +288,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
       await savePubonlnDrugBatch(firstPageData.drugs);
       globalTotalProcessed += firstPageData.drugs.length;
 
-      updateProgress(PROGRESS_SOURCE, {
+      emitProgress({
         processedCount: globalTotalProcessed,
         newCount: globalNewCount,
         updateCount: 0,
@@ -291,7 +304,7 @@ export async function scrapePubonlnDrugInfo(): Promise<PubonlnScrapeResult> {
         await savePubonlnDrugBatch(pageData.drugs);
         globalTotalProcessed += pageData.drugs.length;
 
-        updateProgress(PROGRESS_SOURCE, {
+        emitProgress({
           processedCount: globalTotalProcessed,
           newCount: globalNewCount,
           updateCount: 0,

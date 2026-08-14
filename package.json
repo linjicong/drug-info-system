@@ -11,6 +11,8 @@
     "ts-check": "tsc -p tsconfig.json",
     "migrate:data": "tsx --env-file=.env scripts/migrate-supabase-to-tidb.ts",
     "add:index": "tsx --env-file=.env scripts/add-prefix-index.ts",
+    "create:progress-table": "tsx --env-file=.env scripts/create-task-progress-table.ts",
+    "scrape:runner": "tsx --env-file=.env scripts/scrape-runner.ts",
     "test": "vitest run"
   },
   "dependencies": {

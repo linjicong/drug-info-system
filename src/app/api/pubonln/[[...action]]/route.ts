@@ -2,9 +2,8 @@ import { NextRequest } from 'next/server';
 import {
   getPubonlnDrugList,
   exportPubonlnDrugData,
-  scrapePubonlnDrugInfo,
 } from '@/lib/pubonln-scraper';
-import { getProgress, resetProgress } from '@/lib/progress-manager';
+import { fetchProgressFromDb, resetTaskProgress } from '@/lib/task-progress-repo';
 import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
 import { jsonError, pagedResponse } from '@/lib/api/responses';
 import { buildExcelResponse, exportTimestamp } from '@/lib/api/excel-export';
@@ -142,22 +141,12 @@ async function exportExcel(request: NextRequest) {
 
 const fetchDrugs = createFetchHandler({
   source: 'gd_pubonln',
-  run: () => scrapePubonlnDrugInfo(),
-  toLogCounts: (result) => ({
-    total_count: result.total,
-    new_count: result.newCount,
-    update_count: 0,
-  }),
-  toResponseData: (result) => ({
-    total: result.total,
-    newCount: result.newCount,
-  }),
-  errorLogPrefix: '[API] 挂网药品抓取错误:',
+  errorLogPrefix: '[API] 挂网药品抓取入队错误:',
 });
 
 const progressHandlers = createProgressHandlers({
-  getFn: () => getProgress('gd_pubonln'),
-  resetFn: () => resetProgress('gd_pubonln'),
+  getFn: () => fetchProgressFromDb('gd_pubonln'),
+  resetFn: () => resetTaskProgress('gd_pubonln'),
 });
 
 const schedulerHandlers = createSchedulerHandlers('gd_pubonln');

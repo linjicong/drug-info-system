@@ -1,5 +1,8 @@
 /**
  * 进度存储工厂
+ * @deprecated 进度读写已迁移到 task_progress 表（task-progress-repo）。
+ * 本模块仅供已废弃的内存 progress manager 使用，观察期后随之一并物理删除。
+ *
  * 使用 globalThis 存储进度状态，避免 Next.js dev 热重载或路由 handler
  * 被独立加载时 POST/GET 读写到不同模块实例导致状态不同步
  */

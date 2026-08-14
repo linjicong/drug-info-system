@@ -1,0 +1,63 @@
+name: Scrape Runner
+
+# 抓取任务执行器：GitHub Actions runner 直连 TiDB 执行四源抓取/合并/快照。
+# Vercel 侧只负责入队（写 queued 日志）与读状态，任务本体全部在本 workflow 执行。
+#
+# 需在仓库 Settings -> Secrets and variables -> Actions 配置：
+#   DATABASE_URL  TiDB 连接串（与 .env / Vercel 环境变量同源）
+#
+# 上线步骤：schedule 先注释禁用，待 Vercel 部署新版 + dispatch 试跑通过后，
+# 再放开 schedule（见 .specs/actions-scrape-runner/design.md §8）。
+
+on:
+  # schedule:
+  #   - cron: '*/5 * * * *'   # 每 5 分钟轮询：认领 queued 手动任务 + 到期的定时任务（上线步骤 5 放开）
+  workflow_dispatch:
+    inputs:
+      source:
+        description: '要处理的数据源'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - gz_drug
+          - gd_pubonln
+          - merged_drug
+          - ledger
+
+concurrency:
+  group: scrape-runner
+  cancel-in-progress: false   # 重叠时排队而非取消，避免任务中途被杀产生僵尸状态
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run scrape runner
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SOURCE: ${{ github.event.inputs.source || 'all' }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::未配置 DATABASE_URL secret"
+            exit 1
+          fi
+          echo "处理数据源: $SOURCE"
+          pnpm exec tsx scripts/scrape-runner.ts "$SOURCE"

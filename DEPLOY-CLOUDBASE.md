@@ -21,7 +21,7 @@ CloudBase「静态网站托管」部署（会 404）。必须用 **CloudBase 云
 | `next.config.ts` | 开启 `output: 'standalone'` |
 | `Dockerfile` | 多阶段构建，产出最小运行镜像 |
 | `.dockerignore` | 缩小构建上下文，排除密钥/文档/脚本 |
-| `.github/workflows/cloudbase-cron.yml` | 替代 Vercel Cron 的定时抓取 |
+| `.github/workflows/scrape-runner.yml` | 定时抓取执行器（Actions runner 直连 TiDB，与部署位置无关） |
 
 ---
 
@@ -58,7 +58,7 @@ docker run --rm -p 3000:3000 \
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `DATABASE_URL` | ✅ | TiDB 连接串，格式见 `.env.example` |
-| `CRON_SECRET` | ✅ | 定时任务鉴权密钥，需与 GitHub Secret 一致 |
+| `CRON_SECRET` | 可选 | 仅用于 `/api/ledger/scheduler` 历史 cron 端点鉴权（优先读数据库 cron_secret） |
 | `NODE_ENV` | 自动 | 容器内已固定 `production`，无需手填 |
 | `PORT` | 自动 | 平台注入；Dockerfile 默认 3000 |
 | `HOSTNAME` | 自动 | Dockerfile 已固定 `0.0.0.0`，勿覆盖 |
@@ -70,26 +70,15 @@ docker run --rm -p 3000:3000 \
 
 ## 四、定时抓取任务（GitHub Actions）
 
-Vercel Cron 在云托管**不生效**。改用 `.github/workflows/cloudbase-cron.yml`：
+抓取/合并/台账任务不在应用容器内执行，而是由 `.github/workflows/scrape-runner.yml` 在 GitHub runner 上直连 TiDB 执行（与部署位置无关）：
 
 1. 在 GitHub 仓库 → Settings → Secrets and variables → Actions 添加：
-   - `DEPLOY_URL`：云托管公网域名（结尾**不带** `/`），如
-     `https://your-app.ap-shanghai.run.tcloudbase.com`
-   - `CRON_SECRET`：与云托管环境变量中的 `CRON_SECRET` 相同值
-2. 4 个抓取任务的时间（UTC，与原 `vercel.json` 一致）：
-
-   | 数据源 | UTC | 北京时间 |
-   |--------|-----|----------|
-   | gz_drug | 18:00 | 次日 02:00 |
-   | gd_pubonln | 18:30 | 次日 02:30 |
-   | merged_drug | 20:00 | 次日 04:00 |
-   | ledger | 22:00 | 次日 06:00 |
-
-3. 手动测试：Actions → CloudBase Cron Trigger → Run workflow → 选 source 运行，
-   查看日志应为 `HTTP 200`。
-
-> 说明：GitHub Actions 免费额度下 cron 有分钟级延迟，对每日一次的抓取无影响。
-> 也可保留 `vercel.json`，若同时部署 Vercel 则两边定时都会跑（按需取舍）。
+   - `DATABASE_URL`：TiDB 连接串，与容器环境变量同值
+2. 运行机制：schedule 每 5 分钟轮询（上线初期注释禁用，验证后放开），
+   认领数据库中 queued 的手动任务与到期的定时任务；定时时刻由
+   `scheduler_config.next_run_at` 到期判定吸收 cron 的分钟级漂移。
+3. 手动测试：Actions → Scrape Runner → Run workflow → 选 source 运行，
+   查看日志应输出各源处理结果，且 `scrape_log` 出现 `success` 记录。
 
 ---
 
@@ -101,7 +90,7 @@ Vercel Cron 在云托管**不生效**。改用 `.github/workflows/cloudbase-cron
 | 页面能开但无样式、favicon 404 | 漏拷贝 `.next/static` 或 `public` | 本 Dockerfile 已显式 COPY，勿删这两行 |
 | 容器启动但外部访问超时/拒绝 | 未监听 `0.0.0.0` 或端口不匹配 | 确认 `HOSTNAME=0.0.0.0`，监听端口 = 服务端口 3000 |
 | API 返回 500，日志报 DATABASE_URL | 未配置 `DATABASE_URL` | 在环境变量中补齐 |
-| `/api/cron/trigger` 返回 401 | secret 不匹配 | 校对云托管 `CRON_SECRET` 与 GitHub Secret |
+| Actions 抓取任务失败 | 未配置 `DATABASE_URL` secret 或连接串错误 | 校对仓库 Secrets 中的 `DATABASE_URL` |
 | 构建报某原生模块缺失 | alpine 缺 glibc | 将 Dockerfile 三处 `node:20-alpine` 改为 `node:20-slim` |
 
 ---

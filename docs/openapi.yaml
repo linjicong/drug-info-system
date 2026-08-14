@@ -6,15 +6,16 @@ info:
     药品信息管理系统后端接口文档。
 
     覆盖广州药品采购平台（gz）、广东省医保局挂网药品（pubonln）、
-    药品汇总（merged）、台账追踪（ledger）、外部 Cron 触发（cron）、
-    服务探活（heartbeat）六个模块。
+    药品汇总（merged）、台账追踪（ledger）、服务探活（heartbeat）五个模块。
+
+    ## 任务执行架构
+    抓取/合并/台账任务不在应用内执行：手动触发接口仅写入 queued 日志入队，
+    定时与手动任务均由 GitHub Actions（scrape-runner）直连数据库认领执行；
+    进度/状态接口读 task_progress / scheduler_config 表。
 
     ## 鉴权说明
     - 业务列表 / 查询 / 导出 / 进度接口：无需鉴权。
     - 调度器更新（POST `/api/{module}/scheduler`）：应用内调用，无显式鉴权。
-    - Cron 触发（`/api/cron/trigger`）：
-      通过 `Authorization: Bearer <secret>` 或 `?secret=<secret>` 校验，
-      密钥优先取环境变量 `CRON_SECRET`，其次取数据库 `scheduler_config.cron_secret`。
     - 台账跑批（`/api/ledger/scheduler`）：
       通过 `Authorization: Bearer <secret>` 或 `?secret=<secret>` 校验，
       密钥仅来自数据库 `scheduler_config.cron_secret`（ledger 源），不读环境变量。
@@ -32,8 +33,6 @@ tags:
     description: 药品汇总模块
   - name: ledger
     description: 台账追踪模块
-  - name: cron
-    description: 外部 Cron 触发
   - name: heartbeat
     description: 服务探活
 paths:
@@ -62,62 +61,6 @@ paths:
       responses:
         '200':
           description: 服务存活
-
-  # ───────────────────────── cron ─────────────────────────
-  /api/cron/trigger:
-    get:
-      tags: [cron]
-      summary: 外部 Cron 触发单个数据源任务
-      description: |
-        供外部 Cron（GitHub Actions / UptimeRobot / Serverless CRON）调用。
-        每次只触发一个数据源任务，串行同步执行完成（FaaS 防挂起）。
-
-        - `source` 必填，取值：`gz_drug` / `gd_pubonln` / `merged_drug` / `ledger`
-        - 鉴权：`Authorization: Bearer <secret>` 或 `?secret=<secret>`，
-          环境变量 `CRON_SECRET` 优先，数据库 `cron_secret` 作为第二通道
-        - 跳过条件：调度未启用 / 已在运行 / 未到下次执行时间，均返回 200 + skipped
-      operationId: cronTrigger
-      security:
-        - cronSecret: []
-      parameters:
-        - name: source
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [gz_drug, gd_pubonln, merged_drug, ledger]
-          description: 要触发的数据源。
-        - name: secret
-          in: query
-          required: false
-          schema:
-            type: string
-          description: 鉴权密钥（与 Authorization 头二选一）。
-      responses:
-        '200':
-          description: 触发成功或被跳过
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CronTriggerResponse'
-        '400':
-          description: 缺少或非法 source 参数
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: 鉴权失败
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: 任务执行失败
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   # ───────────────────────── gz 列表 / 导出 ─────────────────────────
   /api/gz:
@@ -196,7 +139,9 @@ paths:
       tags: [gz]
       summary: 触发广州药品抓取
       description: |
-        手动触发广州药品采购平台数据抓取。同步执行，完成后返回抓取计数。
+        手动触发广州药品采购平台数据抓取：写入 queued 日志入队后立即返回，
+        由 GitHub Actions runner 认领执行。
+        进度轮询 `GET /api/gz/progress`，结果查询 `GET /api/gz/scheduler`。
         若已有抓取任务运行中，返回 409。
       operationId: gzFetch
       requestBody:
@@ -211,26 +156,11 @@ paths:
                   description: 指定抓取的页面 URL（可选，缺省走默认配置）。
       responses:
         '200':
-          description: 抓取完成
+          description: 抓取任务已在后台启动
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          total:
-                            type: integer
-                            description: 抓取总数
-                          newCount:
-                            type: integer
-                            description: 新增条数
-                          updateCount:
-                            type: integer
-                            description: 更新条数
+                $ref: '#/components/schemas/SuccessResponse'
         '409':
           description: 已有抓取任务运行中
           content:
@@ -404,28 +334,18 @@ paths:
       tags: [pubonln]
       summary: 触发广东医保挂网药品抓取
       description: |
-        手动触发广东医保局挂网药品数据抓取。同步执行，完成后返回抓取计数。
+        手动触发广东医保局挂网药品数据抓取：写入 queued 日志入队后立即返回，
+        由 GitHub Actions runner 认领执行。
+        进度轮询 `GET /api/pubonln/progress`，结果查询 `GET /api/pubonln/scheduler`。
         若已有抓取任务运行中，返回 409。
       operationId: pubonlnFetch
       responses:
         '200':
-          description: 抓取完成
+          description: 抓取任务已在后台启动
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessResponse'
-                  - type: object
-                    properties:
-                      data:
-                        type: object
-                        properties:
-                          total:
-                            type: integer
-                            description: 抓取总数
-                          newCount:
-                            type: integer
-                            description: 新增条数
+                $ref: '#/components/schemas/SuccessResponse'
         '409':
           description: 已有抓取任务运行中
           content:
@@ -673,7 +593,8 @@ paths:
       tags: [merged]
       summary: 手动触发合并同步
       description: |
-        手动触发双平台数据合并同步，异步在后台执行，立即返回。
+        手动触发双平台数据合并同步：写入 queued 日志入队后立即返回，
+        由 GitHub Actions runner 认领执行。
         若已有合并任务运行中，返回 409。
       operationId: mergedSync
       responses:
@@ -846,7 +767,8 @@ paths:
       tags: [ledger]
       summary: 应用内手动触发台账快照
       description: |
-        应用内部手动触发当日台账快照生成。
+        应用内部手动触发当日台账快照生成：写入 queued 日志入队后立即返回，
+        由 GitHub Actions runner 认领执行。
         与 cron 接口分离，避免在浏览器端暴露 `cron_secret`。
       operationId: ledgerManualTrigger
       responses:
@@ -868,10 +790,11 @@ paths:
       tags: [ledger]
       summary: 台账 cron 跑批
       description: |
-        供 Cron 每天调用生成当日台账快照。
+        历史 cron 入口（Vercel crons 已下线，保留兼容外部调用方）：
+        鉴权通过后写入 queued 日志入队，任务本体由 GitHub Actions runner 认领执行。
         鉴权：`Authorization: Bearer <secret>` 或 `?secret=<secret>`，
         密钥来自数据库 `scheduler_config.cron_secret`（ledger 源）。
-        调度未启用时返回 skipped。
+        调度未启用或已有任务运行时返回 skipped。
       operationId: ledgerScheduler
       security:
         - cronSecret: []
@@ -1226,14 +1149,15 @@ components:
           format: date-time
       required: [success, message, timestamp]
 
-    CronTriggerResponse:
+    CronTriggerResponse: # 已随 /api/cron/trigger 删除而废弃
+      deprecated: true
       type: object
       properties:
         success:
           type: boolean
         message:
           type: string
-          example: Cron trigger completed
+          example: Cron trigger started
         result:
           type: object
           properties:

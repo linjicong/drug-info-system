@@ -10,12 +10,8 @@ import { drugInfoMerged, drugInfoGz, drugInfoGd } from '@/storage/database/share
 import { and, asc, desc, eq, gt, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
-import {
-  startMergeProgress,
-  updateMergeProgress,
-  completeMergeProgress,
-  setMergeProgressError,
-} from './merged-progress-manager';
+import { updateMergeProgress } from './merged-progress-manager';
+import type { MergeProgressPatch } from './progress-patch';
 
 // ─── 内部类型定义 ───────────────────────────────────────────────────
 
@@ -153,7 +149,7 @@ export const normalizeMergedRow = createRowNormalizer<MergedDrugInfo>(
 /**
  * 提取全量广东医保数据
  */
-async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
+async function fetchAllGdDrugs(emitProgress: (patch: MergeProgressPatch) => void): Promise<GdDrugRow[]> {
   let allData: GdDrugRow[] = [];
   // keyset 分页（WHERE id > lastId）：OFFSET 深分页在 TiDB 上每页都要重扫前面所有行，
   // 4 万+行时整个查询阶段长达数分钟且进度无反馈，前端看起来像卡死
@@ -188,7 +184,7 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
     allData = allData.concat(rows as unknown as GdDrugRow[]);
     lastId = String(rows[rows.length - 1].id);
     // 每批回写进度，避免长查询期间前端数字纹丝不动
-    updateMergeProgress({ gdLoaded: allData.length });
+    emitProgress({ gdLoaded: allData.length });
     if (rows.length < batchSize) break;
   }
   return allData;
@@ -197,7 +193,7 @@ async function fetchAllGdDrugs(): Promise<GdDrugRow[]> {
 /**
  * 提取全量广州采购平台数据
  */
-async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
+async function fetchAllGzDrugs(emitProgress: (patch: MergeProgressPatch) => void): Promise<GzDrugRow[]> {
   let allData: GzDrugRow[] = [];
   // 同 fetchAllGdDrugs：keyset 分页替代 OFFSET 深分页
   let lastId = '';
@@ -231,7 +227,7 @@ async function fetchAllGzDrugs(): Promise<GzDrugRow[]> {
 
     allData = allData.concat(rows as unknown as GzDrugRow[]);
     lastId = String(rows[rows.length - 1].id);
-    updateMergeProgress({ gzLoaded: allData.length });
+    emitProgress({ gzLoaded: allData.length });
     if (rows.length < batchSize) break;
   }
   return allData;
@@ -338,20 +334,36 @@ function buildMergedConditions(
 
 /**
  * 将本地合并且统一字段的数据，写入远程数据库的合并表 `drug_info_merged`
+ *
+ * @param options.onProgress 进度补丁回调；缺省时回退写入内存进度 store（过渡期兼容）
  */
-export async function syncMergedDrugData(): Promise<{ success: boolean; message: string; error?: string }> {
+export async function syncMergedDrugData(
+  options?: { onProgress?: (patch: MergeProgressPatch) => void }
+): Promise<{ success: boolean; message: string; error?: string }> {
+  const emitProgress = options?.onProgress ?? ((patch: MergeProgressPatch) => updateMergeProgress(patch));
+
   try {
-    startMergeProgress();
+    emitProgress({
+      status: 'running',
+      phase: '正在准备数据...',
+      gdLoaded: 0,
+      gzLoaded: 0,
+      mergedTotal: 0,
+      savedCount: 0,
+      startTime: Date.now(),
+      endTime: null,
+      error: null,
+    });
 
-    updateMergeProgress({ phase: '正在查询广东医保数据...' });
-    const gdRows = await fetchAllGdDrugs();
-    updateMergeProgress({ gdLoaded: gdRows.length });
+    emitProgress({ phase: '正在查询广东医保数据...' });
+    const gdRows = await fetchAllGdDrugs(emitProgress);
+    emitProgress({ gdLoaded: gdRows.length });
 
-    updateMergeProgress({ phase: '正在查询广州采购平台数据...' });
-    const gzRows = await fetchAllGzDrugs();
-    updateMergeProgress({ gzLoaded: gzRows.length });
+    emitProgress({ phase: '正在查询广州采购平台数据...' });
+    const gzRows = await fetchAllGzDrugs(emitProgress);
+    emitProgress({ gzLoaded: gzRows.length });
 
-    updateMergeProgress({ phase: '正在合并去重数据...' });
+    emitProgress({ phase: '正在合并去重数据...' });
     const mergedData = mergeAndDedupe(gdRows, gzRows);
 
     // 生成插入记录（应用层生成 UUID，避免 MySQL 不支持 RETURNING 需回查）
@@ -375,13 +387,13 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
       gz_min_unit_price: item.gz_min_unit_price ?? null,
     }));
 
-    updateMergeProgress({ mergedTotal: recordsToInsert.length });
+    emitProgress({ mergedTotal: recordsToInsert.length });
 
-    updateMergeProgress({ phase: '清空旧合并数据...' });
+    emitProgress({ phase: '清空旧合并数据...' });
     // 清空全表（等价于原 .neq('id', 全零UUID) 的清表语义）
     await db.delete(drugInfoMerged);
 
-    updateMergeProgress({ phase: '正在将合并数据写入新表...' });
+    emitProgress({ phase: '正在将合并数据写入新表...' });
     let savedCount = 0;
     const insBatchSize = 500;
 
@@ -390,15 +402,15 @@ export async function syncMergedDrugData(): Promise<{ success: boolean; message:
       await db.insert(drugInfoMerged).values(batch as never);
 
       savedCount += batch.length;
-      updateMergeProgress({ savedCount });
+      emitProgress({ savedCount });
     }
 
-    completeMergeProgress();
+    emitProgress({ status: 'completed', phase: '合并完成', endTime: Date.now() });
     return { success: true, message: '合并完成并已持久化到数据库' };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : '未知错误';
     console.error('[MergedDrugService] 同步失败:', error);
-    setMergeProgressError(errorMsg);
+    emitProgress({ status: 'error', phase: '合并失败', error: errorMsg, endTime: Date.now() });
     return { success: false, message: '合并同步失败', error: errorMsg };
   }
 }

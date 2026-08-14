@@ -1,9 +1,5 @@
 import { promisePool } from '../concurrent-pool';
-import {
-  completeProgress,
-  setErrorProgress,
-  type ProgressSource,
-} from '../progress-manager';
+import type { FetchProgressPatch } from '../progress-patch';
 
 /** 抓取结果基本形状（gz / pubonln 共同字段） */
 interface ScrapeResultShape {
@@ -18,8 +14,8 @@ interface ScrapeResultShape {
 export interface ScrapeStrategy<R extends ScrapeResultShape> {
   /** 日志前缀，如 '[DrugScraper]' */
   logPrefix: string;
-  /** 进度源 */
-  source: ProgressSource;
+  /** 进度补丁发射器：业务侧只吐补丁，写入目标（内存 store / DB）由调用方决定 */
+  emitProgress: (patch: FetchProgressPatch) => void;
   /** 页并发数 */
   pageConcurrency: number;
   /** 第 1 步：重置计数器并初始化进度 */
@@ -45,7 +41,7 @@ export interface ScrapeStrategy<R extends ScrapeResultShape> {
 export async function runScrape<R extends ScrapeResultShape>(
   strategy: ScrapeStrategy<R>
 ): Promise<R> {
-  const { logPrefix, source, pageConcurrency } = strategy;
+  const { logPrefix, emitProgress, pageConcurrency } = strategy;
 
   try {
     strategy.init();
@@ -60,7 +56,7 @@ export async function runScrape<R extends ScrapeResultShape>(
     // 如果只有一页，直接返回
     if (totalPages <= 1) {
       strategy.logCompletion();
-      completeProgress(source);
+      emitProgress({ status: 'completed', endTime: Date.now() });
       return strategy.buildSuccess();
     }
 
@@ -88,13 +84,13 @@ export async function runScrape<R extends ScrapeResultShape>(
     strategy.logCompletion();
 
     // 完成进度
-    completeProgress(source);
+    emitProgress({ status: 'completed', endTime: Date.now() });
 
     return strategy.buildSuccess();
   } catch (error) {
     console.error(`${logPrefix} 抓取错误:`, error);
     const errorMsg = error instanceof Error ? error.message : '未知错误';
-    setErrorProgress(source, errorMsg);
+    emitProgress({ status: 'error', error: errorMsg, endTime: Date.now() });
     return {
       success: false,
       message: `抓取失败: ${errorMsg}`,

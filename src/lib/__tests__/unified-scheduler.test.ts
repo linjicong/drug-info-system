@@ -1,17 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // vi.mock factory 被 hoisted，引用的 mock 变量必须用 vi.hoisted 定义
 const mocks = vi.hoisted(() => {
   const mockInsertValues = vi.fn();
   const mockInsert = vi.fn(() => ({ values: mockInsertValues }));
   const mockSelectLimit = vi.fn();
-  const mockSelectWhere = vi.fn(() => ({ limit: mockSelectLimit }));
+  const mockSelectOrderBy = vi.fn(() => ({ limit: mockSelectLimit }));
+  const mockSelectWhere = vi.fn(() => ({ limit: mockSelectLimit, orderBy: mockSelectOrderBy }));
   const mockSelectFrom = vi.fn(() => ({ where: mockSelectWhere }));
   const mockSelect = vi.fn(() => ({ from: mockSelectFrom }));
   const mockUpdateWhere = vi.fn();
-  const mockUpdateSet = vi.fn((_setValues: Record<string, unknown>) => ({ where: mockUpdateWhere }));
+  const mockUpdateSet = vi.fn();
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
   const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
-  return { mockInsertValues, mockInsert, mockSelect, mockSelectFrom, mockSelectWhere, mockSelectLimit, mockUpdate, mockUpdateSet, mockUpdateWhere };
+  return { mockInsertValues, mockInsert, mockSelect, mockSelectFrom, mockSelectWhere, mockSelectOrderBy, mockSelectLimit, mockUpdate, mockUpdateSet, mockUpdateWhere };
 });
 
 vi.mock('@/storage/database/db', () => ({
@@ -25,8 +27,12 @@ vi.mock('@/storage/database/db', () => ({
 vi.mock('../drug-scraper', () => ({ scrapeDrugInfo: vi.fn() }));
 vi.mock('../pubonln-scraper', () => ({ scrapePubonlnDrugInfo: vi.fn() }));
 vi.mock('../merged-drug-service', () => ({ syncMergedDrugData: vi.fn() }));
+vi.mock('../ledger-service', () => ({ executeLedgerSnapshot: vi.fn() }));
+vi.mock('../task-progress-repo', () => ({ resetTaskProgress: vi.fn(), upsertTaskProgress: vi.fn() }));
 
-import { createScrapeLog, getUnifiedSchedulerConfig, canStartScrape, finalizeScrapeRun, updateUnifiedSchedulerConfig } from '../unified-scheduler';
+import { createScrapeLog, getUnifiedSchedulerConfig, canStartScrape, finalizeScrapeRun, updateUnifiedSchedulerConfig, sweepStaleRunning, claimSourceLock, claimQueuedLog, runScrapeJob } from '../unified-scheduler';
+import { scrapeDrugInfo } from '../drug-scraper';
+import { resetTaskProgress } from '../task-progress-repo';
 
 describe('returning 改写: MySQL 不支持 RETURNING，用 lastInsertId 回查', () => {
   beforeEach(() => {
@@ -168,5 +174,151 @@ describe('datetime 列回写必须传 Date 对象（drizzle date 模式会调 va
     const setArg = mocks.mockUpdateSet.mock.calls[0][0];
     expect(setArg.updated_at).toBeInstanceOf(Date);
     expect(setArg.next_run_at).toBeInstanceOf(Date);
+  });
+});
+
+describe('sweepStaleRunning: 僵尸清扫', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('清扫到僵尸：置 idle + running 日志标 failed + 复位进度行', async () => {
+    // HTTP 驱动真实返回形状：rowsAffected
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 1 });
+    const swept = await sweepStaleRunning('gz_drug');
+
+    expect(swept).toBe(1);
+    expect(mocks.mockUpdateSet).toHaveBeenCalledTimes(2);
+    // 第一次：config 置 idle；第二次：残留日志标 failed
+    expect(mocks.mockUpdateSet.mock.calls[0][0].running_status).toBe('idle');
+    expect(mocks.mockUpdateSet.mock.calls[1][0].status).toBe('failed');
+    expect(resetTaskProgress).toHaveBeenCalledWith('gz_drug');
+  });
+
+  it('无僵尸：不碰日志与进度行', async () => {
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 0 });
+    const swept = await sweepStaleRunning('gz_drug');
+
+    expect(swept).toBe(0);
+    expect(mocks.mockUpdateSet).toHaveBeenCalledTimes(1);
+    expect(resetTaskProgress).not.toHaveBeenCalled();
+  });
+});
+
+describe('claimSourceLock: CAS 原子认领', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rowsAffected=1（HTTP 驱动）认领成功', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ id: 7, source: 'gz_drug', running_status: 'idle', updated_at: new Date().toISOString(), cron_secret: 'x', enabled: false, interval_minutes: 60 }]);
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 1 });
+    expect(await claimSourceLock('gz_drug')).toBe(true);
+    expect(mocks.mockUpdateSet.mock.calls[0][0].running_status).toBe('running');
+  });
+
+  it('affectedRows=1（mysql2 回退驱动）认领成功', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ id: 7, source: 'gz_drug', running_status: 'idle', updated_at: new Date().toISOString(), cron_secret: 'x', enabled: false, interval_minutes: 60 }]);
+    mocks.mockUpdateWhere.mockResolvedValue([{ affectedRows: 1 }]);
+    expect(await claimSourceLock('gz_drug')).toBe(true);
+  });
+
+  it('影响行数=0（已被其他 runner 抢占）认领失败', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ id: 7, source: 'gz_drug', running_status: 'running', updated_at: new Date().toISOString(), cron_secret: 'x', enabled: false, interval_minutes: 60 }]);
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 0 });
+    expect(await claimSourceLock('gz_drug')).toBe(false);
+  });
+});
+
+describe('claimQueuedLog: 认领最早 queued 日志', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('有 queued 日志：改 running 并返回 id 与类型', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([{ id: 5, scrape_type: 'manual' }]);
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 1 });
+    const claimed = await claimQueuedLog('merged_drug');
+    expect(claimed).toEqual({ logId: 5, scrapeType: 'manual' });
+    expect(mocks.mockUpdateSet.mock.calls[0][0].status).toBe('running');
+  });
+
+  it('无 queued 日志：返回 null 且不 update', async () => {
+    mocks.mockSelectLimit.mockResolvedValue([]);
+    expect(await claimQueuedLog('merged_drug')).toBeNull();
+    expect(mocks.mockUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('runScrapeJob: 心跳与锁释放', () => {
+  const runningConfig = {
+    id: 7,
+    source: 'gz_drug',
+    enabled: false,
+    interval_minutes: 60,
+    next_run_at: null,
+    last_run_at: null,
+    last_run_status: null,
+    running_status: 'running',
+    updated_at: new Date().toISOString(),
+    cron_secret: 'secret-x',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // runScrapeJob 内所有 select（日志 start_time 回查 / config 读取）统一返回 config 行
+    mocks.mockSelectLimit.mockResolvedValue([runningConfig]);
+    mocks.mockUpdateWhere.mockResolvedValue({ rowsAffected: 1 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('每 60s 心跳刷新 updated_at，结束后 finally 释放锁', async () => {
+    vi.useFakeTimers();
+    let resolveScrape!: (value: { success: boolean; message: string }) => void;
+    (scrapeDrugInfo as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise(resolve => { resolveScrape = resolve; })
+    );
+
+    const job = runScrapeJob('gz_drug', 42);
+
+    // 心跳第一跳（60s）
+    await vi.advanceTimersByTimeAsync(60_000);
+    const heartbeatSets = mocks.mockUpdateSet.mock.calls
+      .map(call => call[0])
+      .filter(set => set.running_status === 'running' && set.updated_at instanceof Date);
+    expect(heartbeatSets.length).toBe(1);
+
+    resolveScrape({ success: true, message: 'ok' });
+    await vi.advanceTimersByTimeAsync(0);
+    await job;
+
+    // 最后一次 update 为释放锁（idle）
+    const lastSet = mocks.mockUpdateSet.mock.calls.at(-1)?.[0];
+    expect(lastSet?.running_status).toBe('idle');
+    // 任务成功日志回写
+    const logSet = mocks.mockUpdateSet.mock.calls.map(call => call[0]).find(set => set.status === 'success');
+    expect(logSet).toBeDefined();
+  });
+
+  it('任务抛错：日志标 failed 且仍释放锁', async () => {
+    (scrapeDrugInfo as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('源站挂了'));
+
+    await runScrapeJob('gz_drug', 42);
+
+    const logSet = mocks.mockUpdateSet.mock.calls.map(call => call[0]).find(set => set.status === 'failed');
+    expect(logSet?.error_message).toBe('源站挂了');
+    expect(mocks.mockUpdateSet.mock.calls.at(-1)?.[0]?.running_status).toBe('idle');
+  });
+
+  it('sinks 注入时透传给业务函数', async () => {
+    (scrapeDrugInfo as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, message: 'ok' });
+    const fetchSink = vi.fn();
+
+    await runScrapeJob('gz_drug', 42, { fetch: fetchSink });
+
+    expect(scrapeDrugInfo).toHaveBeenCalledWith(undefined, undefined, { onProgress: fetchSink });
   });
 });

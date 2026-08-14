@@ -415,6 +415,36 @@ export const drugDailyLedgers = mysqlTable(
   ]
 );
 
+// ============ 任务进度表（跨进程进度的唯一来源） ============
+
+// GitHub Actions runner 执行任务时写入，API 进度轮询接口读取。
+// 替代原 globalThis 内存 store（serverless 多实例/响应后冻结下不可见）。
+export const taskProgress = mysqlTable("task_progress", {
+  // 数据源标识：gz_drug / gd_pubonln / merged_drug / ledger
+  source: varchar("source", { length: 50 }).primaryKey(),
+
+  // 任务状态：idle / running / completed / error
+  status: varchar("status", { length: 20 }).default('idle').notNull(),
+
+  // 当前阶段描述
+  phase: varchar("phase", { length: 100 }),
+
+  // 各源计数器快照（JSON 字符串，结构按源区分，见 design §3.1）
+  counters: text("counters"),
+
+  // 任务开始时间
+  start_time: datetime("start_time"),
+
+  // 任务结束时间
+  end_time: datetime("end_time"),
+
+  // 错误信息
+  error: text("error"),
+
+  // 心跳/节流写入时间（running 且距今过久时读取方降级为 error）
+  updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
 // ============ 整合药品数据表 ============
 
 // 合并去重后的药品信息表（由 merged-drug-service 同步生成）

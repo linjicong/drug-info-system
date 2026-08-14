@@ -1,5 +1,10 @@
 /**
  * 抓取进度管理模块
+ * @deprecated 进度读写已迁移到 task_progress 表（task-progress-repo），
+ * 任务执行已迁移到 GitHub Actions runner（scripts/scrape-runner.ts）。
+ * 本模块的内存 store 仅作为无 sinks 时的历史回退路径保留，观察期后物理删除；
+ * FetchProgress 类型仍为前后端响应契约的一部分，请勿移除。
+ *
  * 进度状态经 createProgressStore 存于 globalThis（键名 __fetchProgressStore__ 保持不变），
  * 避免 Next.js dev 热重载或路由 handler 被独立加载时 POST/GET 读写到不同模块实例导致状态不同步
  */

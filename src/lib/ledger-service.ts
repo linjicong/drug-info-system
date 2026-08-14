@@ -1,6 +1,7 @@
 import { db } from '@/storage/database/db';
 import { userTrackedDrugs, drugDailyLedgers, drugInfoMerged } from '@/storage/database/shared/schema';
 import { and, asc, count, desc, eq, gte, inArray, like, lte, or, type SQL } from 'drizzle-orm';
+import type { LedgerProgressPatch } from './progress-patch';
 
 function normalizeQueryText(value?: string): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -496,15 +497,24 @@ export async function getDailyLedgersByDates(
  * 调度执行台账合并同步：
  * 将用户追踪的配置应用到 drug_info_merged（汇总表），
  * 生成今天的快照写入 drug_daily_ledgers。
+ *
+ * @param options.onProgress 进度补丁回调；缺省时不发射（过渡期兼容）
  */
-export async function executeLedgerSnapshot() {
-  // 1. 获取所有用户追踪的药品配置
-  const trackedRowsRaw = await db.select().from(userTrackedDrugs);
-  const trackedDrugs = trackedRowsRaw as unknown as UserTrackedDrug[];
+export async function executeLedgerSnapshot(
+  options?: { onProgress?: (patch: LedgerProgressPatch) => void }
+) {
+  const emitProgress = options?.onProgress ?? (() => {});
 
-  if (!trackedDrugs || trackedDrugs.length === 0) {
-    return { success: true, message: '没有需要监控的药品配置' };
-  }
+  try {
+    // 1. 获取所有用户追踪的药品配置
+    const trackedRowsRaw = await db.select().from(userTrackedDrugs);
+    const trackedDrugs = trackedRowsRaw as unknown as UserTrackedDrug[];
+
+    if (!trackedDrugs || trackedDrugs.length === 0) {
+      return { success: true, message: '没有需要监控的药品配置' };
+    }
+
+    emitProgress({ status: 'running', tracked: trackedDrugs.length, done: 0, startTime: Date.now(), endTime: null, error: null });
 
   // 统计日期按 Asia/Shanghai 自然日计算，避免 UTC 跨日导致“前一天”
   const statDate = new Intl.DateTimeFormat('en-CA', {
@@ -624,7 +634,15 @@ export async function executeLedgerSnapshot() {
     const batch = ledgersToInsert.slice(i, i + batchSize);
     await db.insert(drugDailyLedgers).values(batch as never);
     savedCount += batch.length;
+    emitProgress({ done: savedCount });
   }
 
+  emitProgress({ status: 'completed', done: savedCount, endTime: Date.now() });
   return { success: true, message: `成功快照 ${savedCount} 条药品台账(${statDate})` };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '未知错误';
+    console.error('[Ledger] 台账快照失败:', error);
+    emitProgress({ status: 'error', error: errorMsg, endTime: Date.now() });
+    throw error;
+  }
 }

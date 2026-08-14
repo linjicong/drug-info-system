@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getMergedDrugList,
   exportMergedDrugData,
-  syncMergedDrugData,
 } from '@/lib/merged-drug-service';
 import type { MergedDrugInfo } from '@/components/drug/types';
 import {
@@ -12,16 +11,9 @@ import {
   getLatestDataTime,
   initUnifiedScheduler,
   canStartScrape,
-  setRunningStatus,
   createScrapeLog,
-  updateScrapeLog,
-  finalizeScrapeRun,
 } from '@/lib/unified-scheduler';
-import {
-  startMergeProgress,
-  getMergeProgress,
-  resetMergeProgress,
-} from '@/lib/merged-progress-manager';
+import { mergeProgressFromDb, resetTaskProgress } from '@/lib/task-progress-repo';
 import { parseDrugFilterParams, parsePaginationParams } from '@/lib/api/drug-query-params';
 import { jsonError, pagedResponse } from '@/lib/api/responses';
 import { buildExcelResponse } from '@/lib/api/excel-export';
@@ -253,10 +245,9 @@ async function updateScheduler(request: NextRequest) {
   }
 }
 
-// ---- 手动触发合并同步 ----
+// ---- 手动触发合并同步（入队，由 GitHub Actions runner 认领执行）----
 
 async function triggerSync() {
-  let runningMarked = false;
   try {
     const { canStart, reason } = await canStartScrape(SOURCE);
     if (!canStart) {
@@ -266,70 +257,20 @@ async function triggerSync() {
       );
     }
 
-    await setRunningStatus(SOURCE, 'running');
-    runningMarked = true;
-    startMergeProgress();
-    const logId = await createScrapeLog(SOURCE, 'manual');
-
-    // 异步执行合并同步，不阻塞响应
-    let finalStatus: 'success' | 'failed' = 'failed';
-    syncMergedDrugData()
-      .then(async (result) => {
-        finalStatus = result.success ? 'success' : 'failed';
-        if (logId) {
-          await updateScrapeLog(logId, {
-            status: finalStatus,
-            total_count: 0,
-            new_count: 0,
-            update_count: 0,
-            error_message: result.error,
-          });
-        }
-      })
-      .catch(async (err) => {
-        console.error('[API] 执行合并同步任务失败:', err);
-        finalStatus = 'failed';
-        if (logId) {
-          try {
-            await updateScrapeLog(logId, {
-              status: 'failed',
-              total_count: 0,
-              new_count: 0,
-              update_count: 0,
-              error_message: err instanceof Error ? err.message : '未知错误',
-            });
-          } catch (logErr) {
-            console.error('[API] 回写合并日志失败:', logErr);
-          }
-        }
-      })
-      .finally(async () => {
-        // 同步更新 config 表的 last_run_at / last_run_status / next_run_at；
-        // finalize 与复位各自兜底，确保 running_status 不会因回写异常卡死
-        try {
-          await finalizeScrapeRun(SOURCE, finalStatus);
-        } catch (finalizeErr) {
-          console.error('[API] 回写合并结果失败:', finalizeErr);
-        }
-        try {
-          await setRunningStatus(SOURCE, 'idle');
-        } catch (resetErr) {
-          console.error('[API] 复位合并运行状态失败:', resetErr);
-        }
-      });
+    // 插入 queued 日志即入队，runner 下个周期认领执行
+    const logId = await createScrapeLog(SOURCE, 'manual', 'queued');
+    if (!logId) {
+      return NextResponse.json(
+        { success: false, message: '合并任务入队失败' },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      message: '合并任务已在后台启动',
+      message: '合并任务已加入执行队列',
     });
   } catch (error) {
-    if (runningMarked) {
-      try {
-        await setRunningStatus(SOURCE, 'idle');
-      } catch (resetErr) {
-        console.error('[API] 回滚合并任务运行状态失败:', resetErr);
-      }
-    }
     console.error('[API] 触发合并任务错误:', error);
     return NextResponse.json(
       {
@@ -342,10 +283,10 @@ async function triggerSync() {
   }
 }
 
-// ---- 合并进度（供前端轮询） ----
+// ---- 合并进度（供前端轮询，读 task_progress 表）----
 
 async function getSyncProgress() {
-  const progress = getMergeProgress();
+  const progress = await mergeProgressFromDb();
   return NextResponse.json(progress, {
     headers: {
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -356,7 +297,7 @@ async function getSyncProgress() {
 }
 
 async function resetSyncProgress() {
-  resetMergeProgress();
+  await resetTaskProgress(SOURCE);
   return NextResponse.json({ success: true });
 }
 

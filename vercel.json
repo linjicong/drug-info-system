@@ -1,21 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [
-    {
-      "path": "/api/cron/trigger?source=gz_drug",
-      "schedule": "0 18 * * *"
-    },
-    {
-      "path": "/api/cron/trigger?source=gd_pubonln",
-      "schedule": "30 18 * * *"
-    },
-    {
-      "path": "/api/cron/trigger?source=merged_drug",
-      "schedule": "0 20 * * *"
-    },
-    {
-      "path": "/api/cron/trigger?source=ledger",
-      "schedule": "0 22 * * *"
-    }
-  ]
+  "crons": []
 }

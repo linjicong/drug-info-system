@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getDailyLedgers,
   getDailyLedgersByDates,
-  executeLedgerSnapshot,
   getTrackedDrugs,
   insertTrackedDrugs,
   replaceTrackedDrugs,
   updateTrackedDrug,
   deleteTrackedDrug,
 } from '@/lib/ledger-service';
-import { getUnifiedSchedulerConfig } from '@/lib/unified-scheduler';
+import {
+  getUnifiedSchedulerConfig,
+  canStartScrape,
+  createScrapeLog,
+} from '@/lib/unified-scheduler';
 import { createModuleRoute } from '@/lib/api/module-route';
 
 export const dynamic = 'force-dynamic';
@@ -19,8 +22,8 @@ export const revalidate = 0;
  * 台账（ledger）页面模块路由（URL 与合并前保持一致）
  * GET  /api/ledger/history                - 台账历史查询
  * GET  /api/ledger/history/export-weekly  - 按日期列表查询（周一导出）
- * POST /api/ledger/manual-trigger         - 应用内手动触发快照
- * POST /api/ledger/scheduler              - cron 跑批（cron_secret 鉴权）
+ * POST /api/ledger/manual-trigger         - 应用内手动触发快照（入队，由 GitHub Actions runner 认领执行）
+ * POST /api/ledger/scheduler              - cron 跑批（cron_secret 鉴权，入队）
  * GET/POST/PUT/DELETE /api/ledger/tracked-drugs - 跟踪药品维护
  */
 
@@ -113,13 +116,32 @@ async function getWeeklyExport(request: NextRequest) {
 }
 
 /**
- * 应用内部手动触发台账快照生成接口
+ * 应用内部手动触发台账快照生成接口（入队，由 GitHub Actions runner 认领执行）
  * 与 cron 接口分离，避免在浏览器端暴露 cron_secret
  */
 async function manualTrigger() {
   try {
-    const result = await executeLedgerSnapshot();
-    return NextResponse.json(result);
+    const { canStart, reason } = await canStartScrape('ledger');
+    if (!canStart) {
+      return NextResponse.json(
+        { success: false, message: reason },
+        { status: 409 }
+      );
+    }
+
+    // 插入 queued 日志即入队，runner 下个周期认领执行
+    const logId = await createScrapeLog('ledger', 'manual', 'queued');
+    if (!logId) {
+      return NextResponse.json(
+        { success: false, message: '台账快照任务入队失败' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: '台账快照任务已加入执行队列',
+    });
   } catch (error) {
     console.error('[Ledger Manual Trigger] 手动触发失败:', error);
     return NextResponse.json(
@@ -130,8 +152,9 @@ async function manualTrigger() {
 }
 
 /**
- * 可以通过 cron jobs 每天调用一次，或者手动触发
+ * 历史 cron 入口（vercel crons 已下线，保留端点兼容外部调用方）
  * 鉴权方式：从数据库 scheduler_config 表读取 cron_secret 进行校验
+ * 鉴权通过后仅入队，任务本体由 GitHub Actions runner 认领执行
  */
 async function runScheduler(request: NextRequest) {
   try {
@@ -162,11 +185,30 @@ async function runScheduler(request: NextRequest) {
       );
     }
 
-    const result = await executeLedgerSnapshot();
+    const { canStart } = await canStartScrape('ledger');
+    if (!canStart) {
+      return NextResponse.json({
+        success: true,
+        message: 'Ledger scheduler skipped',
+        result: { status: 'skipped (already running)' },
+      });
+    }
 
-    return NextResponse.json(result);
+    const logId = await createScrapeLog('ledger', 'scheduled', 'queued');
+    if (!logId) {
+      return NextResponse.json(
+        { success: false, message: '台账快照任务入队失败' },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: '台账快照任务已加入执行队列',
+      result: { status: 'queued' },
+    });
   } catch (error) {
-    console.error('[Ledger Scheduler] 跑批失败:', error);
+    console.error('[Ledger Scheduler] 跑批入队失败:', error);
     return NextResponse.json(
       { success: false, message: '生成每天快照失败', error: String(error) },
       { status: 500 }
