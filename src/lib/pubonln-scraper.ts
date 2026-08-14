@@ -12,10 +12,14 @@ import { httpsPost } from './shared/http';
 import { parseNumber, parseInteger } from './shared/parse';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import { runScrape } from './shared/scrape-orchestrator';
+import { chunkArray, withDbRetry } from './shared/db-retry';
 import { updateProgress } from './progress-manager';
 import type { FetchProgressPatch } from './progress-patch';
 
 const PROGRESS_SOURCE = 'gd_pubonln' as const;
+
+/** 批量插入分块大小：单页 500 行宽表整批写海外 Data API 易超时，拆小块降低单请求负载 */
+const INSERT_CHUNK_SIZE = 100;
 
 // 挂网药品信息接口 - 完整字段
 export interface PubonlnDrugInfo {
@@ -425,6 +429,8 @@ async function fetchPubonlnDrugPage(
 
 /**
  * 保存单页挂网药品数据到数据库
+ * 分块（100 行）+ 瞬时网络错误重试；块仍失败时降级逐条插入，
+ * 避免跨境链路单次 ETIMEDOUT 丢失整页数据
  */
 async function savePubonlnDrugBatch(drugList: PubonlnDrugInfo[]): Promise<void> {
   if (drugList.length === 0) {
@@ -437,19 +443,21 @@ async function savePubonlnDrugBatch(drugList: PubonlnDrugInfo[]): Promise<void> 
     created_at: new Date(),
   }));
 
-  try {
-    await db.insert(drugInfoGd).values(recordsToInsert as never);
-    globalNewCount += drugList.length;
-  } catch (error) {
-    console.error('[PubonlnScraper] 批量插入失败:', error);
+  for (const chunk of chunkArray(recordsToInsert, INSERT_CHUNK_SIZE)) {
+    try {
+      await withDbRetry(() => db.insert(drugInfoGd).values(chunk as never), 3, 'PubonlnScraper 批量插入');
+      globalNewCount += chunk.length;
+    } catch (error) {
+      console.error('[PubonlnScraper] 批量插入失败，降级逐条插入:', error);
 
-    // 批量插入失败，尝试单条插入
-    for (const drug of recordsToInsert) {
-      try {
-        await db.insert(drugInfoGd).values(drug as never);
-        globalNewCount++;
-      } catch (singleError) {
-        console.error('[PubonlnScraper] 单条插入失败:', singleError instanceof Error ? singleError.message : singleError);
+      // 批量插入失败，尝试单条插入
+      for (const drug of chunk) {
+        try {
+          await withDbRetry(() => db.insert(drugInfoGd).values(drug as never), 2, 'PubonlnScraper 单条插入');
+          globalNewCount++;
+        } catch (singleError) {
+          console.error('[PubonlnScraper] 单条插入失败:', singleError instanceof Error ? singleError.message : singleError);
+        }
       }
     }
   }

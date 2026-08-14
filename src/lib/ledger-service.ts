@@ -2,6 +2,7 @@ import { db } from '@/storage/database/db';
 import { userTrackedDrugs, drugDailyLedgers, drugInfoMerged } from '@/storage/database/shared/schema';
 import { and, asc, count, desc, eq, gte, inArray, like, lte, or, type SQL } from 'drizzle-orm';
 import type { LedgerProgressPatch } from './progress-patch';
+import { withDbRetry } from './shared/db-retry';
 
 function normalizeQueryText(value?: string): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -632,7 +633,8 @@ export async function executeLedgerSnapshot(
   let savedCount = 0;
   for (let i = 0; i < ledgersToInsert.length; i += batchSize) {
     const batch = ledgersToInsert.slice(i, i + batchSize);
-    await db.insert(drugDailyLedgers).values(batch as never);
+    // 跨境链路瞬时网络错误（ETIMEDOUT 等）时重试，避免整批丢失
+    await withDbRetry(() => db.insert(drugDailyLedgers).values(batch as never), 3, 'Ledger 批量插入');
     savedCount += batch.length;
     emitProgress({ done: savedCount });
   }

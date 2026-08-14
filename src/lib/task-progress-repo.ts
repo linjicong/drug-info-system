@@ -11,6 +11,7 @@
 import { db } from '@/storage/database/db';
 import { taskProgress } from '@/storage/database/shared/schema';
 import { eq } from 'drizzle-orm';
+import { withDbRetry } from './shared/db-retry';
 import type { FetchProgress } from './progress-manager';
 import type { MergeProgress } from './merged-progress-manager';
 
@@ -80,10 +81,15 @@ export async function upsertTaskProgress(
     if (key in values) updateSet[key] = values[key];
   }
 
-  await db
-    .insert(taskProgress)
-    .values(values as never)
-    .onDuplicateKeyUpdate({ set: updateSet as never });
+  await withDbRetry(
+    () =>
+      db
+        .insert(taskProgress)
+        .values(values as never)
+        .onDuplicateKeyUpdate({ set: updateSet as never }),
+    3,
+    `TaskProgress/${source} upsert`
+  );
 }
 
 /** 读取原始进度行；无记录返回 null */

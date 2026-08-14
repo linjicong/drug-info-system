@@ -18,6 +18,7 @@ import { scrapePubonlnDrugInfo } from './pubonln-scraper';
 import { syncMergedDrugData } from './merged-drug-service';
 import { executeLedgerSnapshot } from './ledger-service';
 import { resetTaskProgress } from './task-progress-repo';
+import { withDbRetry } from './shared/db-retry';
 import type { FetchProgressPatch, MergeProgressPatch, LedgerProgressPatch } from './progress-patch';
 
 // 数据源类型
@@ -210,13 +211,18 @@ export async function setRunningStatus(
   const config = await getUnifiedSchedulerConfig(source);
   if (!config) return;
 
-  await db
-    .update(schedulerConfig)
-    .set({
-      running_status: status,
-      updated_at: new Date(),
-    })
-    .where(eq(schedulerConfig.id, config.id));
+  await withDbRetry(
+    () =>
+      db
+        .update(schedulerConfig)
+        .set({
+          running_status: status,
+          updated_at: new Date(),
+        })
+        .where(eq(schedulerConfig.id, config.id)),
+    3,
+    `UnifiedScheduler/${source} setRunningStatus`
+  );
 }
 
 /**
@@ -246,10 +252,15 @@ export async function finalizeScrapeRun(
     );
   }
 
-  await db
-    .update(schedulerConfig)
-    .set(updateData)
-    .where(eq(schedulerConfig.id, config.id));
+  await withDbRetry(
+    () =>
+      db
+        .update(schedulerConfig)
+        .set(updateData)
+        .where(eq(schedulerConfig.id, config.id)),
+    3,
+    `UnifiedScheduler/${source} finalizeScrapeRun`
+  );
 }
 
 /**
@@ -263,12 +274,17 @@ export async function createScrapeLog(
   status: 'queued' | 'running' = 'running'
 ): Promise<number | null> {
   try {
-    const insertResult = await db.insert(scrapeLog).values({
-      source,
-      scrape_type: scrapeType,
-      status,
-      start_time: new Date(),
-    });
+    const insertResult = await withDbRetry(
+      () =>
+        db.insert(scrapeLog).values({
+          source,
+          scrape_type: scrapeType,
+          status,
+          start_time: new Date(),
+        }),
+      3,
+      `UnifiedScheduler/${source} createScrapeLog`
+    );
 
     // MySQL 不支持 RETURNING，使用自增 lastInsertId
     const logId = Number((insertResult as unknown as { lastInsertId: number | string | null }).lastInsertId ?? 0);
@@ -305,14 +321,19 @@ export async function updateScrapeLog(
     ? Math.floor((endTime.getTime() - new Date(log.start_time as unknown as string).getTime()) / 1000)
     : null;
 
-  await db
-    .update(scrapeLog)
-    .set({
-      ...data,
-      end_time: endTime,
-      duration_seconds: durationSeconds,
-    })
-    .where(eq(scrapeLog.id, logId));
+  await withDbRetry(
+    () =>
+      db
+        .update(scrapeLog)
+        .set({
+          ...data,
+          end_time: endTime,
+          duration_seconds: durationSeconds,
+        })
+        .where(eq(scrapeLog.id, logId)),
+    3,
+    `UnifiedScheduler updateScrapeLog#${logId}`
+  );
 }
 
 /**
@@ -435,13 +456,19 @@ export async function claimSourceLock(source: DataSource): Promise<boolean> {
   // 确保配置行存在（首次访问时自动创建默认配置）
   await getUnifiedSchedulerConfig(source);
 
-  const result = await db
-    .update(schedulerConfig)
-    .set({ running_status: 'running', updated_at: new Date() })
-    .where(and(
-      eq(schedulerConfig.source, source),
-      eq(schedulerConfig.running_status, 'idle')
-    ));
+  // 瞬时网络错误时重试安全：CAS UPDATE 本身幂等（重跑仍只在 idle 时生效）
+  const result = await withDbRetry(
+    () =>
+      db
+        .update(schedulerConfig)
+        .set({ running_status: 'running', updated_at: new Date() })
+        .where(and(
+          eq(schedulerConfig.source, source),
+          eq(schedulerConfig.running_status, 'idle')
+        )),
+    3,
+    `UnifiedScheduler/${source} claimSourceLock`
+  );
 
   return getAffectedRows(result) === 1;
 }

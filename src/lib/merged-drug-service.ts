@@ -10,6 +10,7 @@ import { drugInfoMerged, drugInfoGz, drugInfoGd } from '@/storage/database/share
 import { and, asc, desc, eq, gt, like, or, type SQL } from 'drizzle-orm';
 import type { MergedDrugInfo, DrugSource } from '@/components/drug/types';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
+import { withDbRetry } from './shared/db-retry';
 import { updateMergeProgress } from './merged-progress-manager';
 import type { MergeProgressPatch } from './progress-patch';
 
@@ -399,7 +400,8 @@ export async function syncMergedDrugData(
 
     for (let i = 0; i < recordsToInsert.length; i += insBatchSize) {
       const batch = recordsToInsert.slice(i, i + insBatchSize);
-      await db.insert(drugInfoMerged).values(batch as never);
+      // 跨境链路瞬时网络错误（ETIMEDOUT 等）时重试，避免整批丢失
+      await withDbRetry(() => db.insert(drugInfoMerged).values(batch as never), 3, 'MergedDrugService 批量插入');
 
       savedCount += batch.length;
       emitProgress({ savedCount });

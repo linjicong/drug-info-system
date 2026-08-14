@@ -7,11 +7,15 @@ import { httpsPost } from './shared/http';
 import { parseNumber } from './shared/parse';
 import { getPagedList, fetchAllInBatches, createRowNormalizer } from './shared/db-query';
 import { runScrape } from './shared/scrape-orchestrator';
+import { chunkArray, withDbRetry } from './shared/db-retry';
 import { updateProgress, resetProgress } from './progress-manager';
 import type { FetchProgressPatch } from './progress-patch';
 import { batchFetchWithConcurrency } from './drug-detail-worker';
 
 const PROGRESS_SOURCE = 'gz_drug' as const;
+
+/** 批量插入分块大小：整页宽表单次写海外 Data API 易超时，拆小块降低单请求负载 */
+const INSERT_CHUNK_SIZE = 100;
 
 // 药品信息接口 - 完全匹配API返回字段（共23个API字段）
 export interface DrugInfo {
@@ -529,6 +533,8 @@ async function batchFetchDrugDetailTimes(
 
 /**
  * 保存单页药品数据到数据库
+ * 分块（100 行）+ 瞬时网络错误重试；块仍失败时降级逐条插入，
+ * 避免跨境链路单次 ETIMEDOUT 丢失整页数据
  */
 async function saveDrugBatchToDatabase(drugList: DrugInfo[]): Promise<void> {
   if (drugList.length === 0) {
@@ -543,24 +549,26 @@ async function saveDrugBatchToDatabase(drugList: DrugInfo[]): Promise<void> {
 
   console.log(`[DrugScraper] 准备插入 ${recordsToInsert.length} 条数据`);
 
-  try {
-    await db.insert(drugInfoGz).values(recordsToInsert as never);
-    globalNewCount += drugList.length;
-    console.log(`[DrugScraper] 批量插入成功: ${drugList.length} 条`);
-  } catch (error) {
-    console.error('[DrugScraper] 插入失败:', error);
-    // 逐条插入作为备用方案
-    let successCount = 0;
-    for (const drug of recordsToInsert) {
-      try {
-        await db.insert(drugInfoGz).values(drug as never);
-        successCount++;
-      } catch {
-        // 忽略单条失败
+  for (const chunk of chunkArray(recordsToInsert, INSERT_CHUNK_SIZE)) {
+    try {
+      await withDbRetry(() => db.insert(drugInfoGz).values(chunk as never), 3, 'DrugScraper 批量插入');
+      globalNewCount += chunk.length;
+      console.log(`[DrugScraper] 分块插入成功: ${chunk.length} 条`);
+    } catch (error) {
+      console.error('[DrugScraper] 插入失败，降级逐条插入:', error);
+      // 逐条插入作为备用方案
+      let successCount = 0;
+      for (const drug of chunk) {
+        try {
+          await withDbRetry(() => db.insert(drugInfoGz).values(drug as never), 2, 'DrugScraper 单条插入');
+          successCount++;
+        } catch {
+          // 忽略单条失败
+        }
       }
+      globalNewCount += successCount;
+      console.log(`[DrugScraper] 备用插入完成: ${successCount} 条`);
     }
-    globalNewCount += successCount;
-    console.log(`[DrugScraper] 备用插入完成: ${successCount} 条`);
   }
 }
 
