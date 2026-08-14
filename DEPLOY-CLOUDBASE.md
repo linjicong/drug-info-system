@@ -83,7 +83,8 @@ docker run --rm -p 3000:3000 \
 1. 前置条件：装好 Git（Windows 需含 Git Bash，workflow 统一用 bash）；机器能访问
    github.com、nodejs.org、registry.npmjs.org（直连不通时见下方代理说明）
 2. GitHub 仓库 → Settings → Actions → Runners → **New self-hosted runner**
-3. 按页面给出的命令下载 runner 程序并配置，**labels 填 `self-hosted, drug-scrape`**
+3. 按页面给出的命令下载 runner 程序并配置（默认标签 self-hosted 即可，
+   workflow 按 `runs-on: [self-hosted]` 匹配）
 4. 安装为系统服务并启动（`config.cmd`/`config.sh` 时加 `--runasservice`，
    或按页面指引安装服务），保证开机自启
 
