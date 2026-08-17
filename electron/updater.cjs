@@ -10,7 +10,7 @@
  */
 'use strict';
 
-const { app, dialog, shell } = require('electron');
+const { app, dialog, shell, BrowserWindow, ipcMain } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -21,6 +21,10 @@ const { spawn } = require('node:child_process');
 const REQUEST_TIMEOUT_MS = 15_000;
 const DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 const MAX_REDIRECTS = 3;
+const PROGRESS_THROTTLE_MS = 200;
+
+let progressWindow = null;
+let updateSession = null; // { active, base, file, dest, win } 当前下载会话
 
 /** 从 resources/app-update.yml 读取 generic publish 地址（未配置则返回 null） */
 function readPublishUrl() {
@@ -31,6 +35,15 @@ function readPublishUrl() {
   if (!/provider:\s*generic/.test(text)) return null;
   const m = /^url:\s*(.+)$/m.exec(text);
   return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : null;
+}
+
+/** 字节数格式化：B / KB / MB / GB */
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+  return n + ' B';
 }
 
 /** 语义化版本比较：a > b 返回正数，相等返回 0 */
@@ -95,8 +108,11 @@ function parseLatestYml(text) {
   return { version, files };
 }
 
-/** 流式下载安装包并校验 sha512（base64），返回落盘路径 */
-function downloadAndVerify(url, destPath, expectedSha512) {
+/**
+ * 流式下载安装包并校验 sha512（base64），返回落盘路径
+ * onProgress: ({ percent, received, total, bytesPerSecond }) => void，节流推送
+ */
+function downloadAndVerify(url, destPath, expectedSha512, onProgress) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
     const out = fs.createWriteStream(destPath);
@@ -106,7 +122,7 @@ function downloadAndVerify(url, destPath, expectedSha512) {
       if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
         res.resume();
         out.close();
-        resolve(downloadAndVerify(new URL(res.headers.location, url), destPath, expectedSha512));
+        resolve(downloadAndVerify(new URL(res.headers.location, url), destPath, expectedSha512, onProgress));
         return;
       }
       if (res.statusCode !== 200) {
@@ -115,7 +131,42 @@ function downloadAndVerify(url, destPath, expectedSha512) {
         reject(new Error(`下载失败：HTTP ${res.statusCode}`));
         return;
       }
-      res.pipe(hash).pipe(out);
+      const total = Number(res.headers['content-length']) || 0;
+      let received = 0;
+      let lastTick = Date.now();
+      let lastBytes = 0;
+      // 注意：Hash 流作管道中介时其可读侧输出的是摘要本身（64B），会把安装包
+      // 内容覆盖成摘要——数据必须直写文件，hash 在 data 监听中并行 update
+      res.pipe(out);
+      res.on('data', (chunk) => {
+        hash.update(chunk);
+        received += chunk.length;
+        if (!onProgress) return;
+        const now = Date.now();
+        const elapsed = (now - lastTick) / 1000;
+        // 节流推送，最后一块强制上报保证 100%
+        if (elapsed < PROGRESS_THROTTLE_MS / 1000 && received !== total) return;
+        const bytesPerSecond = elapsed > 0 ? Math.round((received - lastBytes) / elapsed) : 0;
+        lastTick = now;
+        lastBytes = received;
+        onProgress({
+          percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null,
+          received,
+          total,
+          bytesPerSecond,
+        });
+      });
+      // 响应结束时补发最终进度（无 Content-Length 时 data 节流可能从未触发上报）
+      res.on('end', () => {
+        if (!onProgress || received <= lastBytes) return;
+        const elapsed = (Date.now() - lastTick) / 1000;
+        onProgress({
+          percent: total > 0 ? 100 : null,
+          received,
+          total,
+          bytesPerSecond: elapsed > 0 ? Math.round((received - lastBytes) / elapsed) : 0,
+        });
+      });
       out.on('finish', () => {
         out.close(() => {
           const actual = hash.digest('base64');
@@ -151,7 +202,108 @@ async function notifyPortableUpdate(base, file) {
   }
 }
 
-/** NSIS 安装版：后台下载校验后引导安装 */
+// ---------- 更新进度窗口 ----------
+
+/** 获取更新进度窗口（已存在则复用并前置） */
+function getProgressWindow() {
+  if (progressWindow && !progressWindow.isDestroyed()) {
+    progressWindow.show();
+    return progressWindow;
+  }
+  progressWindow = new BrowserWindow({
+    width: 420,
+    height: 250,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: '软件更新 - 药品信息系统',
+    webPreferences: {
+      preload: path.join(__dirname, 'update-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  progressWindow.setMenuBarVisibility(false);
+  progressWindow.loadFile(path.join(__dirname, 'update-progress.html'));
+  // 下载进行中关闭窗口 → 隐藏而非销毁，下载继续，完成后自动重新弹出
+  progressWindow.on('close', (event) => {
+    if (updateSession && updateSession.active) {
+      event.preventDefault();
+      progressWindow.hide();
+    }
+  });
+  progressWindow.on('closed', () => {
+    progressWindow = null;
+  });
+  return progressWindow;
+}
+
+/** 执行下载：推送进度，成功/失败通知进度窗口；窗口不可用时回落系统弹窗 */
+function startDownload(win, base, file, dest) {
+  const session = { active: true, base, file, dest, win };
+  updateSession = session;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('update:reset');
+  }
+
+  const onProgress = (progress) => {
+    if (session.active && win && !win.isDestroyed()) {
+      win.webContents.send('update:progress', progress);
+    }
+  };
+
+  const fail = (message) => {
+    // 保留会话（active=false）供“重试”按钮复用下载参数
+    session.active = false;
+    if (!win || win.isDestroyed()) {
+      dialog.showErrorBox('更新失败', message);
+      return;
+    }
+    win.show();
+    win.webContents.send('update:error', message);
+  };
+
+  const succeed = () => {
+    // 保留会话（active=false）供“立即重启更新”按钮使用安装包路径
+    session.active = false;
+    if (!win || win.isDestroyed()) {
+      dialog.showMessageBox({
+        type: 'info',
+        title: '更新已就绪',
+        message: '新版安装包下载完成，可重启应用安装更新。',
+        detail: `安装包位置：${dest}`,
+      });
+      return;
+    }
+    win.show();
+    win.webContents.send('update:ready', { filePath: dest });
+  };
+
+  downloadAndVerify(new URL(file.url, base), dest, file.sha512, onProgress)
+    .then(succeed)
+    .catch((error) => fail(error instanceof Error ? error.message : String(error)));
+}
+
+// 进度窗口“立即重启更新”：拉起安装向导后立即退出，避免占用安装目录文件
+ipcMain.on('update:install', () => {
+  if (!updateSession || updateSession.active || !fs.existsSync(updateSession.dest)) return;
+  spawn(updateSession.dest, [], { detached: true, stdio: 'ignore' });
+  app.quit();
+});
+
+// 进度窗口“重试”：重新开始下载（上次失败已结束会话）
+ipcMain.on('update:retry', () => {
+  if (!updateSession || updateSession.active) return;
+  const { base, file, dest, win } = updateSession;
+  startDownload(win, base, file, dest);
+});
+
+// 进度窗口“稍后/关闭”：下载中→隐藏，已就绪/失败→真正关闭
+ipcMain.on('update:close', () => {
+  if (progressWindow && !progressWindow.isDestroyed()) progressWindow.close();
+});
+
+/** NSIS 安装版：下载时展示进度窗口，完成后提示重启更新 */
 async function applyInstallerUpdate(base, file) {
   const { response } = await dialog.showMessageBox({
     type: 'info',
@@ -165,27 +317,13 @@ async function applyInstallerUpdate(base, file) {
 
   const fileName = decodeURIComponent(file.url.split('/').pop() || 'update.exe');
   const dest = path.join(app.getPath('userData'), 'updates', fileName);
-  try {
-    await downloadAndVerify(new URL(file.url, base), dest, file.sha512);
-  } catch (error) {
-    dialog.showErrorBox('更新失败', error instanceof Error ? error.message : String(error));
-    return;
+  const win = getProgressWindow();
+  // 页面未加载完成时等 did-finish-load 再启动下载，保证首条进度能显示
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => startDownload(win, base, file, dest));
+  } else {
+    startDownload(win, base, file, dest);
   }
-
-  const { response: install } = await dialog.showMessageBox({
-    type: 'info',
-    title: '更新已就绪',
-    message: '新版安装包下载完成，退出应用并开始安装？',
-    buttons: ['退出并安装', '稍后手动安装'],
-    defaultId: 0,
-    cancelId: 1,
-    detail: `安装包位置：${dest}`,
-  });
-  if (install !== 0) return;
-
-  // 拉起安装向导后立即退出，避免占用安装目录文件
-  spawn(dest, [], { detached: true, stdio: 'ignore' });
-  app.quit();
 }
 
 /**
@@ -214,4 +352,4 @@ async function checkForUpdates() {
   }
 }
 
-module.exports = { checkForUpdates, parseLatestYml, compareVersions };
+module.exports = { checkForUpdates, parseLatestYml, compareVersions, downloadAndVerify };
