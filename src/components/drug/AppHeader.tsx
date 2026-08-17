@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { Pill, Building2, Home, Layers, ClipboardList, Clock } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 
 /** 导航菜单项配置 */
 const navItems = [
@@ -43,7 +44,7 @@ const navItems = [
  * 全局导航头组件
  * 提供系统标题和模块路由切换菜单
  */
-export function AppHeader() {
+export function AppHeader({ version }: { version?: string }) {
   const pathname = usePathname();
 
   return (
@@ -57,6 +58,11 @@ export function AppHeader() {
           <span className="font-bold text-lg hidden sm:inline-block">
             药品信息管理系统
           </span>
+          {version && (
+            <Badge variant="outline" className="text-xs text-muted-foreground hidden sm:inline-flex">
+              v{version}
+            </Badge>
+          )}
         </Link>
 
         {/* 导航菜单 */}

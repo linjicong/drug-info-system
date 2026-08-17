@@ -1,6 +1,6 @@
 {
   "name": "drug-info-system",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "药品信息管理系统：抓取、合并与查询政府药品采购平台数据",
   "author": "drug-info-system",
@@ -59,7 +59,6 @@
     "mysql2": "^3.11.0",
     "only-allow": "^1.2.2",
     "pg": "^8.22.0",
-    "qiniu": "^7.15.2",
     "react-dev-inspector": "^2.0.1",
     "shadcn": "latest",
     "tailwindcss": "^4",

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inspector } from 'react-dev-inspector';
 import { AppHeader } from '@/components/drug/AppHeader';
+import pkg from '../../package.json';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -51,7 +52,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`antialiased`}>
         {isDev && <Inspector />}
-        <AppHeader />
+        <AppHeader version={pkg.version} />
         <main className="min-h-[calc(100vh-4rem)]">
           {children}
         </main>

@@ -97,11 +97,11 @@ jobs:
           UPDATE_URL: ${{ secrets.UPDATE_URL }}
         run: node scripts/upload-qiniu.mjs
 
-      - name: Attach to GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          draft: true
+          draft: false
           generate_release_notes: true
           files: |
             release/*.exe
