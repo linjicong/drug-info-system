@@ -17,6 +17,10 @@ const eslintConfig = defineConfig([
     'dist/**',
     // Script files (CommonJS):
     'scripts/**/*.js',
+    // Electron 主进程（CommonJS，非 Next.js 代码）与桌面打包产物：
+    'electron/**',
+    'desktop-dist/**',
+    'release/**',
   ]),
 ]);
 

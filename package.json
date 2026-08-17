@@ -2,6 +2,9 @@
   "name": "drug-info-system",
   "version": "0.1.0",
   "private": true,
+  "description": "药品信息管理系统：抓取、合并与查询政府药品采购平台数据",
+  "author": "drug-info-system",
+  "main": "electron/main.cjs",
   "scripts": {
     "build": "next build",
     "dev": "next dev",
@@ -13,6 +16,8 @@
     "add:index": "tsx --env-file=.env scripts/add-prefix-index.ts",
     "create:progress-table": "tsx --env-file=.env scripts/create-task-progress-table.ts",
     "scrape:runner": "tsx --env-file=.env scripts/scrape-runner.ts",
+    "desktop:dev": "node scripts/desktop-dev.mjs",
+    "desktop:build": "next build && node scripts/assemble-desktop.mjs && node scripts/desktop-build.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -47,11 +52,14 @@
     "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "mysql2": "^3.11.0",
     "only-allow": "^1.2.2",
     "pg": "^8.22.0",
+    "qiniu": "^7.15.2",
     "react-dev-inspector": "^2.0.1",
     "shadcn": "latest",
     "tailwindcss": "^4",

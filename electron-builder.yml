@@ -1,0 +1,50 @@
+# Electron 桌面版打包配置（pnpm desktop:build）
+appId: com.druginfo.desktop
+productName: 药品信息系统
+
+directories:
+  output: release
+  buildResources: build
+
+# 主进程文件：运行时依赖全部在 standalone 产物内，不打包 node_modules
+files:
+  - electron/**/*
+  - package.json
+  - '!node_modules/**'
+
+# Next.js standalone 服务作为额外资源（asar 外，server.js 需直接读文件系统）
+# 注意：依赖目录在组装时已改名 server_modules——electron-builder 对 extraResources
+# 硬编码排除根级 node_modules，运行时由主进程注入 NODE_PATH 补上解析
+extraResources:
+  - from: desktop-dist/server
+    to: server
+
+asar: true
+npmRebuild: false
+
+# 注：electronDist 由 scripts/desktop-build.mjs 运行期按需写入（指向预解压的
+# Electron 发行包目录，走普通拷贝绕开默认的「解压到 .tmp 再 rename」，
+# 后者在本机会稳定 EPERM），勿手工添加
+
+# 注：publish 配置（自动更新源）同样由 scripts/desktop-build.mjs 在设置
+# UPDATE_URL 环境变量时运行期写入，勿手工添加
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # ASCII 文件名：避免中文产物名在对象存储 URL 中需编码，latest.yml 引用更稳
+  artifactName: DrugInfoSystem-Setup-${version}.exe
+
+portable:
+  artifactName: DrugInfoSystem-${version}-portable.exe

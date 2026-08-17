@@ -30,6 +30,35 @@ pnpm start
 
 项目支持 Vercel 部署，推送代码到 Git 仓库后在 Vercel 导入即可。所需环境变量见 `.env.example`，在 Vercel Dashboard 中配置。定时抓取/合并任务由 GitHub Actions（`.github/workflows/scrape-runner.yml`）直连数据库执行：Vercel 侧只负责任务入队（手动按钮写 queued 日志）与读取进度/状态，需在仓库 Settings → Secrets 配置 `DATABASE_URL`。
 
+### 桌面版（Electron，无需服务器部署）
+
+项目可打包为 Windows 桌面应用，适合没有部署环境的场景：Electron 内嵌启动 Next.js standalone 本地服务，抓取任务由进程内本地 runner（`src/lib/local-runner.ts`）认领执行，替代 GitHub Actions；本机为境内 IP，抓取政府平台不受 CloudWAF 海外出口拦截。数据库仍使用 TiDB Cloud，无需本地数据库。
+
+```bash
+# 本地开发验证（与打包链路一致：standalone + Electron）
+pnpm desktop:dev
+
+# 打包 Windows 安装包（NSIS）+ 绿色版（portable），产物在 release/ 目录
+pnpm desktop:build
+```
+
+使用说明：
+
+1. **首次启动**会弹出配置窗口，粘贴 TiDB 连接串（格式见 `.env.example` 的 `DATABASE_URL`），保存在本机用户目录，之后无需再配置；开发模式下直接读仓库根 `.env`
+2. 应用启动后在本地拉起服务（端口从 3000 起自动探测），关闭窗口时服务进程随之退出
+3. 抓取/合并/台账任务的触发、进度轮询、定时调度与 Web 版完全一致（本地 runner 每 15s 巡检认领队列任务）
+4. 安装包未做代码签名，Windows SmartScreen 可能提示“未知发布者”，选择“仍要运行”即可（或直接使用 portable 绿色版）
+
+发版与自动更新（可选，需七牛云或同类静态存储）：
+
+1. 在仓库 Settings → Secrets 配置 `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY` / `QINIU_BUCKET` / `QINIU_ZONE`（可留空） / `UPDATE_URL`（详见 `.github/workflows/desktop-release.yml` 头部注释；七牛新桶无默认测试域名，`UPDATE_URL` 需使用已绑定的访问域名）
+2. 改 `package.json` 的 `version` 并提交，然后 `git tag v<版本> && git push origin v<版本>`
+3. Actions 自动构建 → 上传安装包与 `latest.yml` 到七牛 → 另挂一份 GitHub Release（草稿）做备份
+4. 用户侧：NSIS 安装版启动后自动检测新版本（下载 + sha512 校验 + 引导安装）；portable 版无法原地更新，仅提示下载地址
+5. 本地手工打包时设置 `UPDATE_URL` 环境变量即可让产物带更新能力，不设置则不带（`electron/updater.cjs` 静默跳过）
+
+相关代码：`electron/main.cjs`（主进程）、`electron/updater.cjs`（自动更新）、`electron-builder.yml`（打包配置）、`scripts/assemble-desktop.mjs`（standalone 产物组装）、`scripts/desktop-build.mjs`（打包包装，运行期注入 electronDist / publish）、`scripts/upload-qiniu.mjs`（七牛上传）、`src/instrumentation.ts`（本地 runner 启动入口，仅在 `RUN_LOCAL_RUNNER=1` 时生效，不影响 Vercel/容器部署）。
+
 ## 项目结构
 
 ```
@@ -348,7 +377,7 @@ export const useStore = create<Store>((set) => ({
 - **字体**: Geist Sans & Geist Mono
 - **包管理器**: pnpm 9+
 - **TypeScript**: 5.x
-- **部署**: Vercel（定时抓取由 GitHub Actions scrape-runner 执行）
+- **部署**: Vercel（定时抓取由 GitHub Actions scrape-runner 执行）或 Electron 桌面版（本地 runner，无需部署）
 - **数据库**: TiDB Cloud (MySQL，via @tidbcloud/serverless)
 - **ORM**: Drizzle ORM (mysql-core + tidb-serverless 适配)
 

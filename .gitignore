@@ -96,3 +96,7 @@ Desktop.ini
 # Misc
 .vercel
 .turbo
+
+# Desktop (Electron) artifacts
+desktop-dist/
+release/

@@ -1,0 +1,105 @@
+name: Desktop Release
+
+# 桌面版发版流水线：推送 v* 标签触发 → 构建 Electron 安装包 → 上传更新包到
+# 七牛云（国内自动更新源）→ 同时挂一份到 GitHub Release 做备份。
+#
+# 发版步骤：
+#   1. 修改 package.json 的 version（如 0.2.0）并提交
+#   2. git tag v0.2.0 && git push origin v0.2.0
+#   3. 用户侧：NSIS 安装版启动后自动检测更新；portable 版仅提示下载地址
+#
+# 需在仓库 Settings -> Secrets and variables -> Actions 配置：
+#   QINIU_ACCESS_KEY / QINIU_SECRET_KEY     七牛密钥对（建议专用账号，仅授权目标桶读写）
+#   QINIU_BUCKET                            存储空间名（需公开读，域名管理里绑定下载域名）
+#   QINIU_ZONE                              存储区域，如 z0（华东）/ z1 / z2，可留空默认 z0
+#   UPDATE_URL                              更新源地址，须以 / 结尾，如
+#                                           https://cdn.example.com/drug-info-system/releases/
+#                                           （新桶无默认测试域名，需用已备案/绑定的访问域名）
+#
+# 注：构建不需要访问政府平台源站（无 CloudWAF 问题），用 GitHub 托管 runner 即可；
+# 如需改走 self-hosted，把 runs-on 换成 [self-hosted, windows] 并保证环境装有 pnpm。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false   # 发版构建不允许中途取消，避免七牛上传一半
+
+env:
+  # 桶内存放安装包的目录前缀（与 UPDATE_URL 的路径部分保持一致）
+  RELEASE_PATH_PREFIX: drug-info-system/releases
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release secrets
+        shell: pwsh
+        env:
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+          UPDATE_URL: ${{ secrets.UPDATE_URL }}
+        run: |
+          $missing = @()
+          foreach ($name in @('QINIU_ACCESS_KEY', 'QINIU_SECRET_KEY', 'QINIU_BUCKET', 'UPDATE_URL')) {
+            if (-not [Environment]::GetEnvironmentVariable($name)) { $missing += $name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Error "缺少仓库 Secret：$($missing -join ', ')（见 workflow 文件头部说明）"
+            exit 1
+          }
+
+      - name: Build desktop artifacts
+        shell: pwsh
+        env:
+          UPDATE_URL: ${{ secrets.UPDATE_URL }}
+        run: pnpm desktop:build
+
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release -Filter *.exe
+          if (-not $exe) { Write-Error 'release/ 下未找到安装包'; exit 1 }
+          if (-not (Test-Path release/latest.yml)) { Write-Error '缺少 release/latest.yml'; exit 1 }
+          Get-ChildItem release | Format-Table Name, Length
+
+      - name: Upload to Qiniu
+        shell: pwsh
+        env:
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+          QINIU_ZONE: ${{ secrets.QINIU_ZONE }}
+          UPDATE_URL: ${{ secrets.UPDATE_URL }}
+        run: node scripts/upload-qiniu.mjs
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            release/*.exe
+            release/latest.yml
