@@ -37,6 +37,10 @@ jobs:
   build-and-publish:
     runs-on: windows-latest
     timeout-minutes: 60
+    # 显式声明写入权限：创建/更新 GitHub Release 需要 contents: write，
+    # 避免仓库默认只读 token 导致 action-gh-release 403
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
