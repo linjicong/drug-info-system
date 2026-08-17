@@ -59,6 +59,7 @@
     "mysql2": "^3.11.0",
     "only-allow": "^1.2.2",
     "pg": "^8.22.0",
+    "qiniu": "^7.15.2",
     "react-dev-inspector": "^2.0.1",
     "shadcn": "latest",
     "tailwindcss": "^4",
