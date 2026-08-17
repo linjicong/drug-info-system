@@ -64,12 +64,17 @@ function copyMaterialized(src, dest) {
 
 /* ---------------- node_modules 平铺实体化 ----------------
  *
- * 只以 standalone 自身的 .pnpm 虚拟存储（nft 裁剪过的最小依赖集）为源，
- * 不跟随指向仓库级 .pnpm 的链接（那是未裁剪的完整依赖闭包，会把整个
- * 仓库 node_modules 拖进产物）。
+ * 兼容两种仓库依赖布局（standalone 产物结构随 node-linker 变化）：
+ * - pnpm 默认嵌套布局：以 standalone 自身的 .pnpm 虚拟存储（nft 裁剪过的
+ *   最小依赖集）为源，不跟随指向仓库级 .pnpm 的链接（那是未裁剪的完整
+ *   依赖闭包，会把整个仓库 node_modules 拖进产物）
+ * - 平铺布局（node-linker=hoisted，CI 为绕开 makensis 260 字符路径限制
+ *   而启用）：standalone 的 node_modules 已是 npm 风格扁平结构，无 .pnpm，
+ *   直接实体化顶层包即可
  */
 
-const pnpmDir = path.join(standaloneDir, 'node_modules', '.pnpm');
+const standaloneNm = path.join(standaloneDir, 'node_modules');
+const pnpmDir = path.join(standaloneNm, '.pnpm');
 
 // 包名 → 存储目录（.pnpm/<id>/node_modules/<name>）。同名包会在多个 <id> 下重复出现
 // （自身 + 其他包的兄弟依赖链接），链接目标在仓库级 .pnpm、实体目录在 standalone 内，
@@ -84,7 +89,7 @@ function readPkgVersion(dir) {
     return null;
   }
 }
-for (const id of readdirSync(pnpmDir)) {
+for (const id of existsSync(pnpmDir) ? readdirSync(pnpmDir) : []) {
   const nm = path.join(pnpmDir, id, 'node_modules');
   if (!existsSync(nm)) continue;
   const remember = (name, dir) => {
@@ -109,6 +114,25 @@ for (const id of readdirSync(pnpmDir)) {
       remember(entry.name, path.join(nm, entry.name));
     }
   }
+}
+
+// 平铺布局分支：无 .pnpm 时直接把顶层包登记进 storeByName（扁平结构天然单版本）
+if (storeByName.size === 0 && existsSync(standaloneNm)) {
+  for (const entry of readdirSync(standaloneNm, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('@')) {
+      const scopeDir = path.join(standaloneNm, entry.name);
+      for (const sub of readdirSync(scopeDir, { withFileTypes: true })) {
+        storeByName.set(`${entry.name}/${sub.name}`, path.join(scopeDir, sub.name));
+      }
+    } else {
+      storeByName.set(entry.name, path.join(standaloneNm, entry.name));
+    }
+  }
+}
+if (storeByName.size === 0) {
+  console.error('❌ standalone 产物中未找到任何依赖包（node_modules 缺失？）');
+  process.exit(1);
 }
 
 /* ---------------- 组装 ---------------- */
