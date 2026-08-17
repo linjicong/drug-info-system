@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>软件更新 - 药品信息系统</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 20px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 24px;
+        width: 100%;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+      }
+      h1 {
+        font-size: 16px;
+        margin-bottom: 6px;
+      }
+      .desc {
+        font-size: 13px;
+        color: #64748b;
+        line-height: 1.6;
+        margin-bottom: 14px;
+      }
+      .progress-track {
+        height: 8px;
+        background: #e2e8f0;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .progress-bar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #0ea5e9, #2563eb);
+        border-radius: 4px;
+        transition: width 0.2s ease;
+      }
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        color: #64748b;
+        margin-top: 8px;
+      }
+      .speed {
+        color: #0f766e;
+      }
+      .done {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .done-mark {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background: #ecfdf5;
+        color: #059669;
+        font-size: 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .done-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .btn-row {
+        display: flex;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      button {
+        flex: 1;
+        border: none;
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .primary {
+        background: #0f172a;
+        color: #fff;
+      }
+      .primary:hover {
+        background: #1e293b;
+      }
+      .ghost {
+        background: #f1f5f9;
+        color: #334155;
+      }
+      .ghost:hover {
+        background: #e2e8f0;
+      }
+      .error-text {
+        color: #dc2626;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>软件更新</h1>
+
+      <!-- 下载中 -->
+      <div id="downloading">
+        <p class="desc" id="status-text">正在下载新版本…</p>
+        <div class="progress-track">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="progress-meta">
+          <span id="progress-percent">0%</span>
+          <span class="speed" id="progress-speed"></span>
+        </div>
+        <div class="progress-meta">
+          <span id="progress-size"></span>
+        </div>
+      </div>
+
+      <!-- 下载完成，等待重启 -->
+      <div id="ready" class="hidden">
+        <div class="done">
+          <div class="done-mark">✓</div>
+          <div>
+            <p class="done-title">新版本已下载完成</p>
+            <p class="desc" style="margin-bottom: 0">重启应用即可完成更新安装。</p>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="restart" class="primary">立即重启更新</button>
+          <button id="later" class="ghost">稍后</button>
+        </div>
+      </div>
+
+      <!-- 下载失败 -->
+      <div id="failed" class="hidden">
+        <p class="desc error-text" id="error-text"></p>
+        <div class="btn-row">
+          <button id="retry" class="primary">重试</button>
+          <button id="close" class="ghost">关闭</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      const api = window.updateApi;
+      const bar = document.getElementById('progress-bar');
+
+      function show(section) {
+        ['downloading', 'ready', 'failed'].forEach((id) => {
+          document.getElementById(id).classList.toggle('hidden', id !== section);
+        });
+      }
+
+      function formatBytes(n) {
+        if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+        if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
+        return n + ' B';
+      }
+
+      api.onReset(() => {
+        bar.style.width = '0%';
+        document.getElementById('progress-percent').textContent = '0%';
+        document.getElementById('progress-speed').textContent = '';
+        document.getElementById('progress-size').textContent = '';
+        show('downloading');
+      });
+
+      api.onProgress((p) => {
+        const percent = typeof p.percent === 'number' ? p.percent : 0;
+        bar.style.width = percent + '%';
+        document.getElementById('progress-percent').textContent = percent + '%';
+        document.getElementById('progress-speed').textContent =
+          p.bytesPerSecond > 0 ? formatBytes(p.bytesPerSecond) + '/s' : '';
+        document.getElementById('progress-size').textContent =
+          formatBytes(p.received) + ' / ' + (p.total > 0 ? formatBytes(p.total) : '未知大小');
+        show('downloading');
+      });
+
+      api.onReady(() => {
+        show('ready');
+      });
+
+      api.onError((message) => {
+        document.getElementById('error-text').textContent = message || '下载失败，请稍后重试';
+        show('failed');
+      });
+
+      document.getElementById('restart').addEventListener('click', () => api.installNow());
+      document.getElementById('later').addEventListener('click', () => api.close());
+      document.getElementById('retry').addEventListener('click', () => api.retry());
+      document.getElementById('close').addEventListener('click', () => api.close());
+    </script>
+  </body>
+</html>
