@@ -51,7 +51,10 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # node-linker=hoisted：平铺 node_modules。pnpm 默认 .pnpm 嵌套布局下
+        # app-builder-lib 路径叠加后超 260 字符，NSIS makensis（不走长路径
+        # API）无法 !include 模板文件；平铺布局路径短且无 junction，CI 上更稳
+        run: pnpm install --frozen-lockfile --config.node-linker=hoisted
 
       - name: Check release secrets
         shell: pwsh
