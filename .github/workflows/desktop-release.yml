@@ -32,6 +32,11 @@ concurrency:
 env:
   # 桶内存放安装包的目录前缀（与 UPDATE_URL 的路径部分保持一致）
   RELEASE_PATH_PREFIX: drug-info-system/releases
+  # LOCALAPPDATA 重定向到 runner.temp 下稳定路径：electron postinstall 下载、
+  # desktop-build.mjs 查找、electron-builder 工具链缓存均读该环境变量，
+  # 统一落位后 actions/cache 一次缓存（env 上下文不含 runner 系统变量，
+  # path 中写 %LOCALAPPDATA% 不会被展开，故此处显式重定向）
+  LOCALAPPDATA: '${{ runner.temp }}\localappdata'
 
 jobs:
   build-and-publish:
@@ -53,6 +58,21 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Cache electron binaries & next build
+        # 必须在 pnpm install 之前：electron 包 postinstall 会用 @electron/get
+        # 下载发行包 zip 到 %LOCALAPPDATA%\electron\Cache，恢复晚了照样全量下载；
+        # desktop-build.mjs 已内置「缓存 zip → 预解压」逻辑，命中后跳过网络下载。
+        # key 用 lockfile hash：依赖或 Electron 版本变化时自动重建；restore-keys
+        # 兜底：key 不匹配时仍复用旧缓存（版本未变的部分）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\localappdata
+            .next/cache
+          key: build-cache-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            build-cache-${{ runner.os }}-
 
       - name: Install dependencies
         # node-linker=hoisted：平铺 node_modules。pnpm 默认 .pnpm 嵌套布局下
