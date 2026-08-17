@@ -84,6 +84,9 @@ Desktop.ini
 .tmp/
 .temp/
 
+# 临时验证脚本（验证后删除，不纳入版本库）
+scripts/verify-updater-progress.cjs
+
 # Optional files
 *.tgz
 *.gz

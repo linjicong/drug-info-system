@@ -1,6 +1,6 @@
 {
   "name": "drug-info-system",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "药品信息管理系统：抓取、合并与查询政府药品采购平台数据",
   "author": "drug-info-system",
