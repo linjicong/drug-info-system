@@ -6,7 +6,7 @@
  *
  * 必需环境变量：QINIU_ACCESS_KEY / QINIU_SECRET_KEY / QINIU_BUCKET
  * 可选环境变量：
- *   QINIU_ZONE            存储区域，z0(华东浙江)/z1(华北)/z2(华南)/cn-east-2(华东-2)/na0/as0，默认 z0
+ *   QINIU_ZONE            存储区域，如 z0/z1/z2/cn-east-2/na0/as0；留空则自动探测桶所在区域
  *   RELEASE_PATH_PREFIX   桶内目录前缀，默认 drug-info-system/releases（须与 UPDATE_URL 路径一致）
  */
 import { createRequire } from 'node:module';
@@ -40,14 +40,16 @@ const ZONES = {
   na0: qiniu.zone.Zone_na0,
   as0: qiniu.zone.Zone_as0,
 };
-const zoneName = (process.env.QINIU_ZONE || 'z0').toLowerCase();
+const zoneName = (process.env.QINIU_ZONE || '').toLowerCase();
 const zone = ZONES[zoneName];
-if (!zone) {
-  console.warn(`⚠️ 未知 QINIU_ZONE=${zoneName}，回退 z0`);
+if (zoneName && !zone) {
+  console.warn(`⚠️ 未知 QINIU_ZONE=${zoneName}，将自动探测桶所在区域`);
 }
 
 const config = new qiniu.conf.Config();
-config.zone = zone || qiniu.zone.Zone_z0;
+// 未配置（或配置无效）时不指定 zone，SDK 通过 UC API 自动探测桶所在区域，
+// 避免区域不匹配报 incorrect region
+if (zone) config.zone = zone;
 
 const mac = new qiniu.auth.digest.Mac(accessKey, secretKey);
 const resumeUploader = new qiniu.resume_up.ResumeUploader(config);
