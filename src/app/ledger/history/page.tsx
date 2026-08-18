@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar as CalendarIcon, Download, Clock, Database, ChevronLeft, ChevronRight, RefreshCw, CalendarDays } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
+import { trackEvent } from '@/lib/usage-tracker';
 
 const LEDGER_HISTORY_QUERY_STORAGE_KEY = 'ledger-history-query-state';
 
@@ -147,6 +148,14 @@ export default function LedgerHistoryPage() {
     e.preventDefault();
     if (page === 1) fetchHistory();
     else setPage(1); // 触发 effect
+
+    // 埋点：台账历史查询
+    trackEvent({
+      event_type: 'search_query',
+      event_name: 'search_ledger_history',
+      page_path: '/ledger/history',
+      detail: { productName, companyName, startDate, endDate },
+    });
   };
 
   const handleReset = () => {
@@ -222,6 +231,14 @@ export default function LedgerHistoryPage() {
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, '台账历史');
       XLSX.writeFile(workbook, `药品台账_${appliedQuery.startDate}_至_${appliedQuery.endDate}.xlsx`);
+
+      // 埋点：台账历史导出成功
+      trackEvent({
+        event_type: 'export_data',
+        event_name: 'export_excel',
+        page_path: '/ledger/history',
+        detail: { type: 'excel', startDate: appliedQuery.startDate, endDate: appliedQuery.endDate },
+      });
     } catch (e) {
       console.error(e);
       alert('导出失败，请稍后重试');
@@ -462,6 +479,14 @@ export default function LedgerHistoryPage() {
 
       XLSX.utils.book_append_sheet(workbook, worksheet, '周一台账');
       XLSX.writeFile(workbook, `药品台账_周一数据_${startDate}_至_${endDate}.xlsx`);
+
+      // 埋点：周一台账导出成功
+      trackEvent({
+        event_type: 'export_data',
+        event_name: 'export_weekly',
+        page_path: '/ledger/history',
+        detail: { type: 'weekly', startDate, endDate, mondays: mondays.length },
+      });
     } catch (e) {
       console.error(e);
       alert('导出周一台账数据失败');
@@ -482,6 +507,14 @@ export default function LedgerHistoryPage() {
       if (resData.success) {
         setPage(1);
         fetchHistory();
+
+        // 埋点：手动触发生成台账快照成功
+        trackEvent({
+          event_type: 'scrape_trigger',
+          event_name: 'snapshot_trigger',
+          page_path: '/ledger/history',
+          detail: { source: 'ledger', action: 'snapshot' },
+        });
       }
     } catch (e) {
       alert('执行请求失败');

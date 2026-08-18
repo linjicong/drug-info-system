@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm"
-import { mysqlTable, serial, datetime, varchar, text, decimal, index, int, boolean, date } from "drizzle-orm/mysql-core"
+import { mysqlTable, serial, datetime, varchar, text, decimal, index, int, boolean, date, bigint } from "drizzle-orm/mysql-core"
 
 
 export const healthCheck = mysqlTable("health_check", {
@@ -445,7 +445,39 @@ export const taskProgress = mysqlTable("task_progress", {
   updated_at: datetime("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
-// ============ 整合药品数据表 ============
+// ============ 用户功能使用埋点 ============
+
+// 用户行为埋点表：记录页面访问、查询、导出、抓取触发、台账操作等行为（仅入库，无统计页）
+export const usageEvents = mysqlTable(
+  "usage_events",
+  {
+    // 自增主键（写入频繁场景用 bigint 更轻量）
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+
+    // 匿名用户 ID（前端 localStorage UUID，经 X-User-Id header 传递）
+    user_id: varchar("user_id", { length: 64 }).notNull(),
+
+    // 事件类型：page_view / search_query / export_data / scrape_trigger / ledger_operate
+    event_type: varchar("event_type", { length: 30 }).notNull(),
+
+    // 具体动作名，如：view_home / search_merged / export_excel / fetch_start / ledger_add
+    event_name: varchar("event_name", { length: 100 }).notNull(),
+
+    // 事件发生页面路径，如 /gz、/merged
+    page_path: varchar("page_path", { length: 200 }).notNull(),
+
+    // 附加信息 JSON 字符串（查询条件、数据源、动作类型等）
+    detail: text("detail"),
+
+    // 事件时间（服务端落库时间）
+    created_at: datetime("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  },
+  (table) => [
+    index("idx_usage_events_event_type").on(table.event_type),
+    index("idx_usage_events_created_at").on(table.created_at),
+    index("idx_usage_events_user_id").on(table.user_id),
+  ]
+);
 
 // 合并去重后的药品信息表（由 merged-drug-service 同步生成）
 export const drugInfoMerged = mysqlTable(

@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import type { PaginationInfo } from '../types';
 import type { FilterValues } from '../SearchCard';
 import { buildModuleQueryStorageKey, readModuleQueryState } from './storage';
+import { trackEvent } from '@/lib/usage-tracker';
 
 export interface UseDrugQueryOptions {
   /** 药品列表查询接口 */
@@ -36,6 +37,10 @@ export function useDrugQuery<T extends { id: string }>(options: UseDrugQueryOpti
 
   const queryStorageKey = options.queryStorageKey ?? buildModuleQueryStorageKey(drugsApi);
   const persistedQueryState = readModuleQueryState(queryStorageKey);
+
+  // 埋点：由 drugsApi 推导模块标识（/api/gz → /gz）
+  const modulePath = drugsApi.replace(/^\/api/, '') || '/';
+  const moduleKey = modulePath.replace(/\//g, '_').replace(/^_/, '') || 'module';
 
   // 药品列表数据
   const [drugs, setDrugs] = useState<T[]>([]);
@@ -122,6 +127,14 @@ export function useDrugQuery<T extends { id: string }>(options: UseDrugQueryOpti
       window.URL.revokeObjectURL(url);
 
       toast.success('导出成功', { description: 'Excel 文件已下载' });
+
+      // 埋点：导出成功
+      trackEvent({
+        event_type: 'export_data',
+        event_name: `export_${moduleKey}`,
+        page_path: modulePath,
+        detail: { type: 'excel' },
+      });
     } catch {
       toast.error('导出失败', { description: '网络错误，请重试' });
     } finally {
@@ -133,6 +146,14 @@ export function useDrugQuery<T extends { id: string }>(options: UseDrugQueryOpti
   const handleSearch = () => {
     setPagination(prev => ({ ...prev, page: 1 }));
     loadDrugs();
+
+    // 埋点：查询搜索（翻页不重复计数，仅搜索动作）
+    trackEvent({
+      event_type: 'search_query',
+      event_name: `search_${moduleKey}`,
+      page_path: modulePath,
+      detail: { keyword: searchKeyword || undefined, filters: filterValues, page: 1 },
+    });
   };
 
   /** 重置筛选条件 */

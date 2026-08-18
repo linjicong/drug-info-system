@@ -7,6 +7,7 @@ import { buildProgressStorageKey } from './storage';
 import { useDrugQuery } from './use-drug-query';
 import { useProgressPolling } from './use-progress-polling';
 import { useScheduler } from './use-scheduler';
+import { trackEvent } from '@/lib/usage-tracker';
 
 const DEFAULT_FETCH_PROGRESS: FetchProgress = {
   status: 'idle',
@@ -47,6 +48,16 @@ const parsePersistedFetchProgress = (raw: unknown): FetchProgress | null => {
  * 通过 apiConfig 参数区分不同模块的 API 路径
  */
 export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApiConfig) {
+  // 埋点：由 fetchApi 推导数据源标识与页面路径（/api/gz/fetch → gz_drug, /gz）
+  const fetchModulePath = `/${apiConfig.fetchApi.replace(/^\/api\/?/, '').split('/')[0] ?? ''}`;
+  const fetchSourceMap: Record<string, string> = {
+    '/gz': 'gz_drug',
+    '/pubonln': 'gd_pubonln',
+    '/merged': 'merged_drug',
+  };
+  const fetchSource = fetchSourceMap[fetchModulePath] ?? 'unknown';
+  const isSyncAction = apiConfig.fetchApi.includes('/sync');
+
   const query = useDrugQuery<T>({
     drugsApi: apiConfig.drugsApi,
     exportApi: apiConfig.exportApi,
@@ -109,6 +120,14 @@ export function useDrugModule<T extends { id: string }>(apiConfig: DrugModuleApi
         polling.stopPolling();
         // 请求被拒绝（例如 409 正在运行）或失败，回滚客户端 running 占位态
         polling.resetToIdle();
+      } else {
+        // 埋点：抓取/合并同步任务成功入队
+        trackEvent({
+          event_type: 'scrape_trigger',
+          event_name: isSyncAction ? 'sync_start' : 'fetch_start',
+          page_path: fetchModulePath,
+          detail: { source: fetchSource, action: isSyncAction ? 'sync' : 'fetch' },
+        });
       }
     } catch {
       toast.error('抓取失败', { description: '网络错误，请重试' });

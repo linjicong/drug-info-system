@@ -15,6 +15,7 @@
     "migrate:data": "tsx --env-file=.env scripts/migrate-supabase-to-tidb.ts",
     "add:index": "tsx --env-file=.env scripts/add-prefix-index.ts",
     "create:progress-table": "tsx --env-file=.env scripts/create-task-progress-table.ts",
+    "create:usage-events": "tsx --env-file=.env scripts/create-usage-events-table.ts",
     "scrape:runner": "tsx --env-file=.env scripts/scrape-runner.ts",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "desktop:build": "next build && node scripts/assemble-desktop.mjs && node scripts/desktop-build.mjs",
@@ -44,6 +45,7 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@react-dev-inspector/babel-plugin": "^2.0.1",
     "@react-dev-inspector/middleware": "^2.0.1",
     "@supabase/supabase-js": "2.95.3",

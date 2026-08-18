@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Trash2, Edit, Upload, RefreshCw, HardDrive, LayoutGrid, FileDown, ChevronLeft, ChevronRight, Search, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { trackEvent } from '@/lib/usage-tracker';
 
 const LEDGER_TRACK_QUERY_STORAGE_KEY = 'ledger-track-query-state';
 
@@ -146,6 +147,14 @@ export default function TrackedDrugsPage() {
         setForm({ id: '', product_name: '', national_drug_code: '', company_name: '', min_pac_quantity: '', min_measure_unit: '' });
         setIsEditing(false);
         fetchDrugs();
+
+        // 埋点：追踪药品新增/修改成功
+        trackEvent({
+          event_type: 'ledger_operate',
+          event_name: isEditing ? 'ledger_update' : 'ledger_add',
+          page_path: '/ledger/track',
+          detail: { action: isEditing ? 'update' : 'add', productName: form.product_name },
+        });
       } else {
         alert('保存失败：' + data.message);
       }
@@ -161,6 +170,14 @@ export default function TrackedDrugsPage() {
       const data = await res.json();
       if (data.success) {
         fetchDrugs();
+
+        // 埋点：删除追踪药品成功
+        trackEvent({
+          event_type: 'ledger_operate',
+          event_name: 'ledger_remove',
+          page_path: '/ledger/track',
+          detail: { action: 'remove', id },
+        });
       }
     } catch (e) {
       alert('网络错误');
@@ -216,6 +233,14 @@ export default function TrackedDrugsPage() {
         if (apiData.success) {
           alert(`成功导入 ${apiData.count} 条记录！`);
           fetchDrugs();
+
+          // 埋点：批量导入追踪药品成功
+          trackEvent({
+            event_type: 'ledger_operate',
+            event_name: 'ledger_import',
+            page_path: '/ledger/track',
+            detail: { action: 'import', count: apiData.count },
+          });
         } else {
           alert('导入失败：' + apiData.message);
         }
@@ -242,6 +267,14 @@ export default function TrackedDrugsPage() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, '导入模板');
     XLSX.writeFile(workbook, '药品监控配置导入模板.xlsx');
+
+    // 埋点：下载导入模板
+    trackEvent({
+      event_type: 'export_data',
+      event_name: 'download_template',
+      page_path: '/ledger/track',
+      detail: { type: 'template' },
+    });
   };
 
   const handleNew = () => {

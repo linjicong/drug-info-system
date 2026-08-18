@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import type { SchedulerConfig } from '../types';
+import { trackEvent } from '@/lib/usage-tracker';
 
 const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   enabled: false,
@@ -53,6 +54,15 @@ export interface UseSchedulerOptions {
  * 封装配置加载、更新与（可选的）自动状态探针
  */
 export function useScheduler(options: UseSchedulerOptions) {
+  // 埋点：由 schedulerApi 推导模块路径与数据源（/api/gz/scheduler → /gz, gz_drug）
+  const schedulerModulePath = `/${options.schedulerApi.replace(/^\/api\/?/, '').split('/')[0] ?? ''}`;
+  const schedulerSourceMap: Record<string, string> = {
+    '/gz': 'gz_drug',
+    '/pubonln': 'gd_pubonln',
+    '/merged': 'merged_drug',
+  };
+  const schedulerSource = schedulerSourceMap[schedulerModulePath] ?? 'unknown';
+
   const {
     schedulerApi,
     defaultConfig = DEFAULT_SCHEDULER_CONFIG,
@@ -109,6 +119,14 @@ export function useScheduler(options: UseSchedulerOptions) {
           toast.success(result.message);
           loadSchedulerConfig();
         }
+
+        // 埋点：调度器配置变更成功
+        trackEvent({
+          event_type: 'scrape_trigger',
+          event_name: 'config_update',
+          page_path: schedulerModulePath,
+          detail: { source: schedulerSource, action: 'config_update', updates },
+        });
       } else {
         toast.error(updateErrorTitle, { description: result.message });
       }

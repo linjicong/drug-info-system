@@ -17,6 +17,10 @@ coverage/
 *.lcov
 .nyc_output
 
+# Playwright (usage-tracking 6A E2E)
+test-results/
+playwright-report/
+
 # Environment variables
 .env
 .env.local
