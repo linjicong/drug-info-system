@@ -92,4 +92,26 @@ for (const name of ordered) {
     process.exit(1);
   }
 }
-console.log(`🎉 全部上传完成，更新源地址：${process.env.UPDATE_URL || `<UPDATE_URL 未设置>/${prefix}/`}`);
+
+// latest.yml 是同名覆盖上传，CDN 会按 max-age 长期缓存旧清单（表现为客户端
+// 检查更新无反应）；上传完成后主动刷新缓存，让新版本立即对客户端可见
+const updateUrl = process.env.UPDATE_URL;
+if (updateUrl) {
+  const latestUrl = `${updateUrl.replace(/\/+$/, '')}/latest.yml`;
+  const cdnManager = new qiniu.cdn.CdnManager(mac);
+  await new Promise((resolve) => {
+    cdnManager.refreshUrls([latestUrl], (err, body, info) => {
+      if (err || (info && info.statusCode !== 200)) {
+        console.warn(
+          `⚠️ latest.yml CDN 缓存刷新失败${err ? `：${err.message}` : `（HTTP ${info && info.statusCode}）`}，请到七牛控制台手动刷新：${latestUrl}`,
+        );
+      } else {
+        console.log(`✅ latest.yml CDN 缓存已刷新：${latestUrl}`);
+      }
+      resolve();
+    });
+  });
+} else {
+  console.warn('ℹ️ 未设置 UPDATE_URL，跳过 CDN 缓存刷新；如配置了 CDN 域名请手动刷新 latest.yml');
+}
+console.log(`🎉 全部上传完成，更新源地址：${updateUrl || `<UPDATE_URL 未设置>/${prefix}/`}`);
