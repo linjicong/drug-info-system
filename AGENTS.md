@@ -52,3 +52,16 @@
 - Next.js 项目**必须默认**采用 shadcn/ui 组件、风格和规范，**除非用户指定用其他的组件和规范。**
 
 
+
+<!-- zy-sdd:codex:start -->
+## zy-sdd Codex Integration
+
+This project uses the zy-sdd Spec Coding framework. When the user types a
+zy-* or /zy-* request, treat it as a zy-sdd task alias rather than a shell
+command. Read .zy-sdd/commands/<name>.md first, then load only the relevant
+.zy-sdd/skills/<name>/SKILL.md, .zy-sdd/references/*.md, and
+.zy-sdd/agents/*.md files needed for the current stage.
+
+Use python scripts/token_usage.py delta --provider codex --feature-id <id>
+when recording stage token deltas.
+<!-- zy-sdd:codex:end -->
